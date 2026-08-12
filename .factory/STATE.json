@@ -1,0 +1,14 @@
+{
+  "current_step": 1,
+  "max_retries": 3,
+  "retry_count": 0,
+  "status": "IDLE",
+  "active_target": "web",
+  "active_branch": "main",
+  "checkpoints": {
+    "plan_approved": false,
+    "tests_passed": false,
+    "security_approved": false
+  },
+  "logs": []
+}

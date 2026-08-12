@@ -1,0 +1,24 @@
+{
+  "name": "@autofactory/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AutoFactory developer terminal controller",
+  "type": "module",
+  "bin": {
+    "autofactory": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@autofactory/core": "0.1.0",
+    "chalk": "^6.0.0",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0"
+  }
+}

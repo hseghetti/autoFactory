@@ -1,0 +1,31 @@
+{
+  "name": "autofactory-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-Native Graph Orchestrator for Autonomous Software Factories",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "npm@11.5.2",
+  "workspaces": [
+    "packages/*",
+    "packages/mcp-servers/*"
+  ],
+  "scripts": {
+    "setup": "bash scripts/setup-local.sh",
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "factory:init": "node packages/cli/dist/index.js init",
+    "factory:start": "node packages/cli/dist/index.js start",
+    "factory:resume": "node packages/cli/dist/index.js resume",
+    "factory:status": "node packages/cli/dist/index.js status",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0",
+    "turbo": "^2.10.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

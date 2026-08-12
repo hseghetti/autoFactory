@@ -1,0 +1,11 @@
+export { buildGraph } from "./graph/graph.js";
+export { createNodes } from "./graph/nodes.js";
+export type { FactoryContext } from "./graph/nodes.js";
+export { FactoryGraphState, FactoryStateZod, INITIAL_STATE } from "./graph/state.js";
+export type { Checkpoints, FactoryState, FactoryStatus, LogEntry } from "./graph/state.js";
+export { StateManager } from "./harness/state-manager.js";
+export { callClaudeCode } from "./router/engines/claude-code.js";
+export { callOllama } from "./router/engines/ollama.js";
+export { callOpenCode } from "./router/engines/opencode.js";
+export { selectEngine } from "./router/router.js";
+export type { EngineChoice, RoutedNodeType } from "./router/router.js";
