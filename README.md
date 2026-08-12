@@ -66,7 +66,13 @@ and *where* a human needs to approve before it continues.
 
 **Ecosystem complementarity**
 
-- **SpecKit / SDD**: defines the contract, rules, and acceptance criteria (`.factory/PLAN.md`).
+- **Specification layer (SpecKit / SDD-style)**: this repo does not depend on
+  or invoke the SpecKit CLI — `.factory/BRIEF.md` and `.factory/PLAN.md` are
+  our own plain-Markdown format. The diagram's top layer represents the
+  *methodology* they follow (spec-driven contracts and acceptance criteria
+  before code gets written), not an integrated tool. Swapping in real
+  SpecKit output as the input to `planNode` is a natural extension, not
+  something wired up today.
 - **Claude Code CLI**: handles high-reasoning tasks, complex refactoring, and initial code generation.
 - **OpenCode + local Ollama models**: executes local tool-calling loops, test fixes, and lint repairs with zero API cost.
 - **AutoFactory**: coordinates execution flow, manages persistent state across resets, and enforces Human-in-the-Loop checkpoints.
