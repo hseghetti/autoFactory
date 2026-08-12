@@ -43,7 +43,7 @@ and *where* a human needs to approve before it continues.
 +-----------------------------------------------------------------------------------+
 | GRAPH ORCHESTRATION LAYER (AutoFactory Core)                                       |
 | Framework: LangGraph.js                                                            |
-| State Management | Conditional Routing | Parallel Fan-Out/Fan-In | Human Checkpoints|
+| State Management | Conditional Routing | Retry-Bounded Healing Loop | Human Checkpoints|
 +-----------------------------------------------------------------------------------+
                                        |
                   +--------------------+--------------------+
@@ -52,7 +52,8 @@ and *where* a human needs to approve before it continues.
 +------------------------------------+   +------------------------------------+
 | EXECUTION ENGINE (Cloud)            |   | EXECUTION ENGINE (Local Edge)       |
 | Engine: Claude Code CLI             |   | Engine: OpenCode + Ollama           |
-| Role: High-level Architecture       |   | Role: Self-Healing & Test Loops     |
+| Role: High-level Architecture       |   | Role: Planning, Inspection &        |
+|                                      |   | Self-Healing                        |
 +------------------------------------+   +------------------------------------+
                   |                                         |
                   +--------------------+--------------------+
@@ -60,7 +61,8 @@ and *where* a human needs to approve before it continues.
                                        v
                      +-----------------------------------+
                      | HARNESS & EVIDENCE LAYER            |
-                     | .factory/ + Playwright / Jest        |
+                     | .factory/ + your test command        |
+                     | (npm test by default)                |
                      +-----------------------------------+
 ```
 
@@ -74,7 +76,8 @@ and *where* a human needs to approve before it continues.
   SpecKit output as the input to `planNode` is a natural extension, not
   something wired up today.
 - **Claude Code CLI**: handles high-reasoning tasks, complex refactoring, and initial code generation.
-- **OpenCode + local Ollama models**: executes local tool-calling loops, test fixes, and lint repairs with zero API cost.
+- **Local Ollama models**: `deepseek-r1:14b` drafts the plan and `qwen2.5-coder:32b` inspects the architect's diff, both called directly over Ollama's HTTP API.
+- **OpenCode + `hermes3:36b`**: executes local tool-calling loops for test fixes and lint repairs with zero API cost.
 - **AutoFactory**: coordinates execution flow, manages persistent state across resets, and enforces Human-in-the-Loop checkpoints.
 
 ## How a run actually flows
@@ -90,6 +93,9 @@ and *where* a human needs to approve before it continues.
           |  (factory:resume)
           v
    [ architect ] -------- Claude Code CLI implements the plan
+          |
+          v
+   [ inspect ] --------- local model (Ollama) reviews the diff before testing
           |
           v
    [ test ] <-------------------------+
@@ -173,6 +179,11 @@ the `npm run factory:*` scripts default to the repo root, so you can skip
 
 ## CLI reference
 
+`autofactory` is the package's `bin` name, but nothing in this repo installs
+it globally yet — run these via `node packages/cli/dist/index.js <command>`
+(as in the Quickstart above) unless you've linked it yourself
+(`npm link` inside `packages/cli`).
+
 | Command | What it does |
 |---|---|
 | `autofactory init [--dir <path>]` | Scaffolds `.factory/{BRIEF.md,PLAN.md,STATE.json}` in the target project if they don't already exist. |
@@ -189,9 +200,15 @@ This is an early scaffold: the graph, router, and CLI are wired up and
 functional (they make real calls to Ollama/Claude Code CLI/OpenCode and
 persist real state), but it has not yet been run end-to-end against a
 production project. Treat it as a working starting point to build on, not a
-polished tool — in particular, error recovery, parallel Web/Mobile fan-out,
-and the MCP testing connector are minimal by design and likely need
-hardening for real use.
+polished tool. In particular:
+
+- The graph handles a single `active_target` per run — there is no parallel
+  Web/Mobile fan-out/fan-in yet, despite the project structure hinting at
+  multiple targets. Adding it means branching the graph per target and
+  fanning back in before `finalize`.
+- Error recovery is intentionally minimal (retry-bounded self-healing, no
+  backoff/circuit-breaking) and the MCP testing connector exposes a single
+  `run_tests` tool — both likely need hardening for real use.
 
 ## Hardware & platform caveats
 

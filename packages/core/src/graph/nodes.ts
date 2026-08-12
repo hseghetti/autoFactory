@@ -80,6 +80,32 @@ export function createNodes(ctx: FactoryContext) {
     };
   }
 
+  async function inspectNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    const model = process.env.AUTOFACTORY_INSPECT_MODEL ?? "qwen2.5-coder:32b";
+    const diff = await execa("git", ["diff", "--stat"], { cwd: ctx.projectRoot, reject: false })
+      .then((r) => r.stdout)
+      .catch(() => "");
+
+    const result = await callOllama({
+      model,
+      prompt:
+        "You are a local code inspector that runs after an architecture pass and before the " +
+        "test suite. Review this diff summary and flag anything obviously wrong (missing " +
+        "files, unrelated changes, likely broken imports). Be brief — this is advisory, not " +
+        `blocking.\n\nDIFF STAT:\n${diff.trim() || "(no git diff available)"}`,
+    });
+
+    return {
+      logs: withLog(
+        state,
+        "inspectNode",
+        result.success
+          ? `Inspection notes via ${model}: ${result.text.trim().slice(0, 500)}`
+          : `Inspection skipped: ${result.error}`,
+      ),
+    };
+  }
+
   async function testNode(state: FactoryState): Promise<Partial<FactoryState>> {
     try {
       const { exitCode, stdout, stderr } = await execa("npm", ["test"], {
@@ -146,5 +172,5 @@ export function createNodes(ctx: FactoryContext) {
     };
   }
 
-  return { planNode, humanCheckpointNode, architectNode, testNode, healNode, finalizeNode, failNode };
+  return { planNode, humanCheckpointNode, architectNode, inspectNode, testNode, healNode, finalizeNode, failNode };
 }

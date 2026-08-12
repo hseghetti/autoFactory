@@ -15,6 +15,7 @@ export function buildGraph(ctx: FactoryContext) {
     .addNode("plan", nodes.planNode)
     .addNode("humanCheckpoint", nodes.humanCheckpointNode)
     .addNode("architect", nodes.architectNode)
+    .addNode("inspect", nodes.inspectNode)
     .addNode("test", nodes.testNode)
     .addNode("heal", nodes.healNode)
     .addNode("finalize", nodes.finalizeNode)
@@ -35,7 +36,8 @@ export function buildGraph(ctx: FactoryContext) {
     .addConditionalEdges("humanCheckpoint", (state: FactoryState) =>
       state.checkpoints.plan_approved ? "architect" : END,
     )
-    .addEdge("architect", "test")
+    .addEdge("architect", "inspect")
+    .addEdge("inspect", "test")
     .addConditionalEdges("test", (state: FactoryState) => {
       if (state.checkpoints.tests_passed) return "finalize";
       if (state.retry_count >= state.max_retries) return "fail";
