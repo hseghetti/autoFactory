@@ -4,7 +4,13 @@ import { z } from "zod";
 export const CheckpointsSchema = z.object({
   plan_approved: z.boolean(),
   tests_passed: z.boolean(),
+  // .default(false): added after STATE.json files already existed on disk
+  // for in-progress projects — StateManager.load() parses those files
+  // as-is, and a required field missing from old JSON would throw instead
+  // of just picking up the sensible default.
+  e2e_passed: z.boolean().default(false),
   security_approved: z.boolean(),
+  deployed: z.boolean().default(false),
 });
 
 export const EngineKindSchema = z.enum(["cloud-cli", "local-cli", "local-http", "process"]);
@@ -67,7 +73,9 @@ export const INITIAL_STATE: FactoryState = {
   checkpoints: {
     plan_approved: false,
     tests_passed: false,
+    e2e_passed: false,
     security_approved: false,
+    deployed: false,
   },
   logs: [],
 };

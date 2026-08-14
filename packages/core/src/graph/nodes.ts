@@ -1,5 +1,5 @@
 import { execa } from "execa";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NullReporter, type EngineKind, type Reporter } from "../observability/reporter.js";
 import { callClaudeCode } from "../router/engines/claude-code.js";
@@ -129,7 +129,9 @@ export function createNodes(ctx: FactoryContext) {
           prompt:
             "You are a software delivery planner. Based on this product brief, write an " +
             "atomized execution plan in Markdown with numbered tasks, each including " +
-            `Target, Spec, and Test Contract.\n\nBRIEF:\n${brief}` +
+            "Target, Spec, and Test Contract. For any task with a user-facing UI, the Test " +
+            "Contract should require end-to-end coverage (e.g. a Maestro flow), not just unit " +
+            `tests.\n\nBRIEF:\n${brief}` +
             (uxWireframes.trim() ? `\n\nUX WIREFRAMES / COMPONENT HIERARCHY:\n${uxWireframes}` : ""),
         }),
       );
@@ -184,7 +186,10 @@ export function createNodes(ctx: FactoryContext) {
           model,
           prompt:
             `Implement the following execution plan for target "${state.active_target}". ` +
-            `Follow each task's Spec and satisfy its Test Contract.\n\n${plan}`,
+            "Follow each task's Spec and satisfy its Test Contract. If the project has a " +
+            "user-facing UI, also implement Maestro E2E flows under `.maestro/` covering the " +
+            "main flows, wired to an npm `test:e2e` script; save any `takeScreenshot` output " +
+            `under \`.factory/e2e-artifacts/\`.\n\n${plan}`,
           allowedTools: "Read,Edit,Write,Bash(npm *),Bash(git *)",
         }),
       );
@@ -279,7 +284,13 @@ export function createNodes(ctx: FactoryContext) {
           : `Tests failed: ${result.stderr || result.stdout}`;
 
       return {
-        status: passed ? "DONE" : "HEALING",
+        // Passing unit tests isn't the end of the pipeline anymore (e2e,
+        // visual review, security, deploy still run) — only `finalize`
+        // gets to claim DONE. Omitting `status` here (rather than setting
+        // it, then having e2eTest immediately overwrite it moments later)
+        // avoids a brief window where a crash between test and e2eTest
+        // would leave STATE.json claiming DONE when it isn't.
+        ...(passed ? {} : { status: "HEALING" as const }),
         checkpoints: { ...state.checkpoints, tests_passed: passed },
         logs: withLog(state, "test", message.slice(0, 2000), {
           engine: "process",
@@ -287,6 +298,191 @@ export function createNodes(ctx: FactoryContext) {
           durationMs: result.durationMs,
           success: passed,
         }),
+      };
+    });
+  }
+
+  async function e2eTestNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "e2eTest", async () => {
+      const commandStr = process.env.AUTOFACTORY_E2E_TEST_COMMAND ?? "npm run test:e2e";
+      const [cmd, ...args] = commandStr.split(" ").filter(Boolean);
+
+      const result = await runEngineCall(reporter, "e2eTest", "process", commandStr, async () => {
+        try {
+          const { exitCode, stdout, stderr } = await execa(cmd, args, {
+            cwd: ctx.projectRoot,
+            reject: false,
+          });
+          return { success: exitCode === 0, exitCode, stdout, stderr };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            stdout: "",
+            stderr: "",
+          };
+        }
+      });
+
+      // A missing test:e2e script means the project hasn't set up E2E yet
+      // — that's not something `heal` can fix, so don't treat it as a
+      // blocking failure. Surface it as a loud warning and let the run
+      // continue, consistent with AutoFactory's graceful-degradation
+      // pattern for missing external tooling elsewhere in the graph.
+      const missingScript = !result.success && /missing script/i.test(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+
+      if (missingScript) {
+        // The engine_call_end event above already reported this as a plain
+        // process failure (correctly, from execa's point of view) — without
+        // this, the live console shows a bare "FAIL" with no indication
+        // that it's an intentional, non-blocking skip.
+        reporter.emit({
+          type: "note",
+          node: "e2eTest",
+          timestamp: new Date().toISOString(),
+          message: `No "${commandStr}" script found — skipped, not a failure (E2E was not validated).`,
+        });
+        return {
+          checkpoints: { ...state.checkpoints, e2e_passed: true },
+          logs: withLog(
+            state,
+            "e2eTest",
+            `WARNING: "${commandStr}" has no matching npm script — E2E was NOT validated. Add a ` +
+              "test:e2e script (see README) or set AUTOFACTORY_E2E_TEST_COMMAND to enable it.",
+            { engine: "process", model: commandStr, durationMs: result.durationMs },
+          ),
+        };
+      }
+
+      const passed = result.success;
+      const message = passed
+        ? "E2E tests passed."
+        : result.error
+          ? `Could not run E2E tests: ${result.error}`
+          : `E2E tests failed: ${result.stderr || result.stdout}`;
+
+      return {
+        ...(passed ? {} : { status: "HEALING" as const }),
+        checkpoints: { ...state.checkpoints, e2e_passed: passed },
+        logs: withLog(state, "e2eTest", message.slice(0, 2000), {
+          engine: "process",
+          model: commandStr,
+          durationMs: result.durationMs,
+          success: passed,
+        }),
+      };
+    });
+  }
+
+  async function visualReviewNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "visualReview", async () => {
+      if (!process.env.AUTOFACTORY_ENABLE_VISUAL_REVIEW) {
+        return {
+          logs: withLog(
+            state,
+            "visualReview",
+            "Visual review disabled (set AUTOFACTORY_ENABLE_VISUAL_REVIEW=1 to enable — reviews " +
+              "E2E screenshots against UX_WIREFRAMES.md via Claude Code CLI's vision, at real cloud cost).",
+          ),
+        };
+      }
+
+      const artifactsDir = join(ctx.projectRoot, ".factory", "e2e-artifacts");
+      const hasArtifacts = await stat(artifactsDir)
+        .then((s) => s.isDirectory())
+        .catch(() => false);
+
+      if (!hasArtifacts) {
+        return {
+          logs: withLog(
+            state,
+            "visualReview",
+            `Visual review enabled but no screenshots found in ${artifactsDir} — nothing to review.`,
+          ),
+        };
+      }
+
+      const model = process.env.AUTOFACTORY_ARCHITECT_MODEL ?? "claude-sonnet-5";
+      const uxWireframes = await readFile(uxWireframesPath, "utf-8").catch(() => "");
+
+      const result = await runEngineCall(reporter, "visualReview", "cloud-cli", model, () =>
+        callClaudeCode({
+          cwd: ctx.projectRoot,
+          model,
+          prompt:
+            `Review the E2E screenshots in ${artifactsDir} against this UX/component spec and flag ` +
+            "usability, styling, or layout issues (overlapping elements, unreadable contrast, " +
+            "content that doesn't match the intended design). Be brief — this is advisory, not " +
+            `blocking.\n\nUX SPEC:\n${uxWireframes.trim() || "(no UX_WIREFRAMES.md content)"}`,
+          allowedTools: "Read",
+        }),
+      );
+
+      return {
+        logs: withLog(
+          state,
+          "visualReview",
+          result.success
+            ? `Visual review notes via ${model}: ${result.output.trim().slice(0, 500)}`
+            : `Visual review skipped: ${result.error}`,
+          {
+            engine: "cloud-cli",
+            model,
+            durationMs: result.durationMs,
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            costUsd: result.costUsd,
+            success: result.success,
+          },
+        ),
+      };
+    });
+  }
+
+  async function deployNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "deploy", async () => {
+      const commandStr = process.env.AUTOFACTORY_DEPLOY_COMMAND;
+
+      if (!commandStr) {
+        return {
+          logs: withLog(
+            state,
+            "deploy",
+            "Deploy disabled (set AUTOFACTORY_DEPLOY_COMMAND to enable, e.g. " +
+              '"eas build --platform all --non-interactive").',
+          ),
+        };
+      }
+
+      const [cmd, ...args] = commandStr.split(" ").filter(Boolean);
+
+      const result = await runEngineCall(reporter, "deploy", "process", commandStr, async () => {
+        try {
+          const { exitCode, stdout, stderr } = await execa(cmd, args, {
+            cwd: ctx.projectRoot,
+            reject: false,
+          });
+          return { success: exitCode === 0, exitCode, stdout, stderr };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            stdout: "",
+            stderr: "",
+          };
+        }
+      });
+
+      return {
+        checkpoints: { ...state.checkpoints, deployed: result.success },
+        logs: withLog(
+          state,
+          "deploy",
+          result.success
+            ? "Deploy command completed."
+            : `Deploy command failed: ${result.error ?? result.stderr ?? result.stdout}`,
+          { engine: "process", model: commandStr, durationMs: result.durationMs, success: result.success },
+        ),
       };
     });
   }
@@ -332,12 +528,19 @@ export function createNodes(ctx: FactoryContext) {
     return withNodeTiming(reporter, "heal", async () => {
       const model = process.env.AUTOFACTORY_HEAL_MODEL ?? "hermes3:8b";
       const nextRetryCount = state.retry_count + 1;
+      // Without this, OpenCode gets a fully generic prompt with no idea what
+      // actually broke (unit test or E2E) — it can only guess. The most
+      // recent log entry is whichever of test/e2eTest just failed.
+      const lastFailure = state.logs.at(-1);
 
       const result = await runEngineCall(reporter, "heal", "local-cli", model, () =>
         callOpenCode({
           cwd: ctx.projectRoot,
           model: `ollama/${model}`,
-          prompt: "The test suite is failing. Inspect the failing tests and source, then fix the code so all tests pass.",
+          prompt:
+            "The test suite is failing. Inspect the failing tests and source, then fix the code " +
+            "so all tests pass." +
+            (lastFailure ? `\n\nMost recent failure (from "${lastFailure.node}"):\n${lastFailure.message}` : ""),
         }),
       );
 
@@ -382,7 +585,10 @@ export function createNodes(ctx: FactoryContext) {
     architectNode,
     inspectNode,
     testNode,
+    e2eTestNode,
+    visualReviewNode,
     securityCheckNode,
+    deployNode,
     healNode,
     finalizeNode,
     failNode,

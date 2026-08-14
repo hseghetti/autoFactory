@@ -82,6 +82,9 @@ export class ConsoleReporter implements Reporter {
       case "graph_end":
         console.log(chalk.cyan(`\n■ Graph run reached status=${event.status} in ${formatDuration(event.durationMs)}`));
         break;
+      case "note":
+        console.log(chalk.yellow(`  [${event.node}] ${event.message}`));
+        break;
       default:
         break;
     }

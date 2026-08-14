@@ -17,7 +17,10 @@ export function buildGraph(ctx: FactoryContext) {
     .addNode("architect", nodes.architectNode)
     .addNode("inspect", nodes.inspectNode)
     .addNode("test", nodes.testNode)
+    .addNode("e2eTest", nodes.e2eTestNode)
+    .addNode("visualReview", nodes.visualReviewNode)
     .addNode("securityCheck", nodes.securityCheckNode)
+    .addNode("deploy", nodes.deployNode)
     .addNode("heal", nodes.healNode)
     .addNode("finalize", nodes.finalizeNode)
     .addNode("fail", nodes.failNode)
@@ -40,12 +43,19 @@ export function buildGraph(ctx: FactoryContext) {
     .addConditionalEdges("architect", (state: FactoryState) => (state.status === "FAILED" ? "fail" : "inspect"))
     .addEdge("inspect", "test")
     .addConditionalEdges("test", (state: FactoryState) => {
-      if (state.checkpoints.tests_passed) return "securityCheck";
+      if (state.checkpoints.tests_passed) return "e2eTest";
+      if (state.retry_count >= state.max_retries) return "fail";
+      return "heal";
+    })
+    .addConditionalEdges("e2eTest", (state: FactoryState) => {
+      if (state.checkpoints.e2e_passed) return "visualReview";
       if (state.retry_count >= state.max_retries) return "fail";
       return "heal";
     })
     .addEdge("heal", "test")
-    .addEdge("securityCheck", "finalize")
+    .addEdge("visualReview", "securityCheck")
+    .addEdge("securityCheck", "deploy")
+    .addEdge("deploy", "finalize")
     .addEdge("finalize", END)
     .addEdge("fail", END)
     .compile();

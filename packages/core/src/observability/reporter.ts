@@ -20,7 +20,8 @@ export type FactoryEvent =
       tokensOut?: number;
       costUsd?: number;
       error?: string;
-    };
+    }
+  | { type: "note"; node: string; timestamp: string; message: string };
 
 /**
  * Sink for live progress events emitted while the graph runs. Nodes call

@@ -98,14 +98,26 @@ and *where* a human needs to approve before it continues.
    [ inspect ] --------- local model (Ollama) reviews the diff before testing
           |
           v
-   [ test ] <-------------------------+
+   [ test ] <-------------------------+       (unit tests, e.g. `npm test`)
           |  fail (retries left)      |
           v                           |
    [ heal ] --------- OpenCode + local model attempts a fix
           |  (loops back to test) ----+
           |
           v  pass
+   [ e2eTest ] --------------------------+    (`npm run test:e2e`, e.g. Maestro — skipped with
+          |  fail (retries left)         |     a warning, not blocked, if no script exists)
+          v                              |
+   [ heal ] (same node/budget as above) -+
+          |
+          v  pass, or no test:e2e script found
+   [ visualReview ] -- opt-in: Claude Code CLI reviews E2E screenshots vs UX_WIREFRAMES.md (advisory)
+          |
+          v
    [ securityCheck ] -- local model (Ollama) flags secrets/dangerous commands (advisory)
+          |
+          v
+   [ deploy ] -- opt-in: runs $AUTOFACTORY_DEPLOY_COMMAND if set, else no-op
           |
           v
    [ finalize ]                          (or [ fail ] if retries exhausted)
@@ -167,6 +179,55 @@ What's actually captured per engine:
   (see `packages/core/src/router/engines/opencode.ts`), so token/cost figures
   aren't reliably parseable today and are left blank rather than guessed.
 - **`npm test`** (`process`): duration and pass/fail only.
+
+## E2E, visual review & deploy (optional)
+
+Unit tests alone don't tell you a UI actually works, looks right, or that
+the project is deployable. Three more stages run after `test` passes —
+each degrades gracefully rather than forcing every project to adopt them:
+
+- **`e2eTest`**: runs `$AUTOFACTORY_E2E_TEST_COMMAND` (default
+  `npm run test:e2e`). Real failures feed into the same retry-bounded
+  `heal` loop as unit tests (shared `retry_count`/`max_retries` budget —
+  there's no separate counter for E2E). A **missing** `test:e2e` script is
+  *not* treated as a failure — `heal` can't invent an E2E setup from
+  nothing — it's logged as a loud warning instead, so a run can still
+  finish while making it obvious E2E was never actually validated.
+
+  We chose **Maestro** over Detox for mobile E2E: no native build required
+  to run against Expo Go/a dev client, and it has documented first-class
+  Expo support. `architectNode` is instructed to write flows under
+  `.maestro/` and wire them to the `test:e2e` script, using
+  `UX_WIREFRAMES.md` as the source of truth for expected screens. AutoFactory
+  itself never calls `maestro` directly or manages a simulator/emulator —
+  that's entirely the target project's `test:e2e` script's job, same as
+  the existing `test` harness never assumed a framework. Install Maestro
+  with `curl -fsSL "https://get.maestro.mobile.dev" | bash` (needs Java 17+
+  and an already-running simulator/emulator).
+
+- **`visualReview`** (opt-in — set `AUTOFACTORY_ENABLE_VISUAL_REVIEW`):
+  looks for screenshots in `.factory/e2e-artifacts/` (the convention
+  `architectNode` is told to use for Maestro's `takeScreenshot`) and asks
+  Claude Code CLI to review them against `UX_WIREFRAMES.md` for usability/
+  layout/styling issues. This runs on the **cloud** model, not a local one
+  — none of the local Ollama models this project uses (qwen2.5-coder) are
+  multimodal, and a real image-based usability review needs vision. That's
+  real per-run cloud cost, hence opt-in. Like `inspect`/`securityCheck`,
+  it's advisory only — automated design judgment is inherently fuzzy, and
+  this doesn't pretend otherwise by blocking the run over it.
+
+- **`deploy`** (opt-in — set `AUTOFACTORY_DEPLOY_COMMAND`): runs whatever
+  command you configure (e.g.
+  `AUTOFACTORY_DEPLOY_COMMAND="eas build --platform all --non-interactive --profile preview"`)
+  after `securityCheck`. AutoFactory has no built-in knowledge of EAS,
+  Vercel, or any other target — same "you own the command" pattern as the
+  test harness. A deploy failure is logged and reflected in
+  `checkpoints.deployed`, but doesn't trigger `heal` or block `finalize` —
+  credential/infra problems aren't something a code-fixing loop can solve.
+
+None of this is required: with no `test:e2e` script and neither opt-in
+variable set, a run behaves exactly as before (three quick log lines
+saying so, nothing blocks).
 
 ## Project structure
 
@@ -278,11 +339,11 @@ commands against the repo root.)
 
 ## Current status
 
-This is an early scaffold: the graph, router, and CLI are wired up and
-functional (they make real calls to Ollama/Claude Code CLI/OpenCode and
-persist real state), but it has not yet been run end-to-end against a
-production project. Treat it as a working starting point to build on, not a
-polished tool. In particular:
+The graph, router, and CLI are wired up and functional — they make real
+calls to Ollama/Claude Code CLI/OpenCode, persist real state, and have
+completed a real end-to-end run against a from-scratch mobile project.
+Still, treat this as a working starting point to build on, not a polished
+tool. In particular:
 
 - The graph handles a single `active_target` per run — there is no parallel
   Web/Mobile fan-out/fan-in yet, despite the project structure hinting at
@@ -291,6 +352,12 @@ polished tool. In particular:
 - Error recovery is intentionally minimal (retry-bounded self-healing, no
   backoff/circuit-breaking) and the MCP testing connector exposes a single
   `run_tests` tool — both likely need hardening for real use.
+- E2E/visual review/deploy (see above) are all best-effort and gracefully
+  skippable, not hard guarantees — a `DONE` run doesn't necessarily mean
+  E2E ran (if `test:e2e` was never set up) or that anything got deployed
+  (if `AUTOFACTORY_DEPLOY_COMMAND` was never set). Check
+  `checkpoints.e2e_passed`/`deployed` via `autofactory status`, don't
+  assume `DONE` covers everything.
 
 ## Hardware & platform caveats
 
