@@ -5,7 +5,7 @@ import { NullReporter, type EngineKind, type Reporter } from "../observability/r
 import { callClaudeCode } from "../router/engines/claude-code.js";
 import { callOllama } from "../router/engines/ollama.js";
 import { callOpenCode } from "../router/engines/opencode.js";
-import type { FactoryState } from "./state.js";
+import type { FactoryState, TriageAction } from "./state.js";
 
 export interface FactoryContext {
   /** Root of the target project the graph operates on. */
@@ -63,6 +63,31 @@ async function getWorkingDiff(projectRoot: string): Promise<string> {
   if (!diff.trim()) return "(no changes detected in the working tree)";
   if (diff.length <= MAX_DIFF_CHARS) return diff;
   return `${diff.slice(0, MAX_DIFF_CHARS)}\n... (diff truncated, ${diff.length - MAX_DIFF_CHARS} more characters)`;
+}
+
+interface TriageDecision {
+  action: TriageAction;
+  reason: string;
+  instructions: string;
+}
+
+/**
+ * Parses triageNode's fixed-format response (ACTION/REASON/INSTRUCTIONS).
+ * A local model won't always follow the format exactly — this falls back to
+ * "heal" (the safe, pre-triage default) whenever ACTION doesn't parse
+ * cleanly, so a bad response degrades to today's behavior instead of
+ * breaking the run.
+ */
+function parseTriageResponse(text: string): TriageDecision {
+  const actionMatch = text.match(/ACTION:\s*(heal|architect|fail)/i);
+  const reasonMatch = text.match(/REASON:\s*(.+)/i);
+  const instructionsMatch = text.match(/INSTRUCTIONS:\s*([\s\S]+)/i);
+
+  return {
+    action: (actionMatch?.[1]?.toLowerCase() as TriageAction | undefined) ?? "heal",
+    reason: reasonMatch?.[1]?.trim() ?? "Could not parse triage response — defaulting to heal.",
+    instructions: instructionsMatch?.[1]?.trim().slice(0, 1500) ?? text.trim().slice(0, 500),
+  };
 }
 
 interface EngineCallLike {
@@ -179,17 +204,29 @@ export function createNodes(ctx: FactoryContext) {
     return withNodeTiming(reporter, "architect", async () => {
       const plan = await readFile(planPath, "utf-8").catch(() => "");
       const model = process.env.AUTOFACTORY_ARCHITECT_MODEL ?? "claude-sonnet-5";
+      // Set by triageNode when a test/e2eTest failure needs more than a
+      // quick heal pass — broader context, config/dependency changes, or
+      // real investigation. Same node, different prompt: a targeted fix
+      // instead of "implement everything," using architect's own
+      // Read/Edit/Bash tools to actually investigate rather than guess.
+      const isTargetedFix = Boolean(state.triage_instructions);
+
+      const prompt = isTargetedFix
+        ? "A validation step failed and was triaged as needing your attention (not a quick " +
+          `mechanical fix). Investigate and fix this in the project (target "${state.active_target}") ` +
+          "— you have full Read/Edit/Write/Bash access, use it to find the actual cause rather " +
+          `than guessing.\n\nISSUE:\n${state.triage_instructions}\n\nOriginal execution plan, for context:\n${plan}`
+        : `Implement the following execution plan for target "${state.active_target}". ` +
+          "Follow each task's Spec and satisfy its Test Contract. If the project has a " +
+          "user-facing UI, also implement Maestro E2E flows under `.maestro/` covering the " +
+          "main flows, wired to an npm `test:e2e` script; save any `takeScreenshot` output " +
+          `under \`.factory/e2e-artifacts/\`.\n\n${plan}`;
 
       const result = await runEngineCall(reporter, "architect", "cloud-cli", model, () =>
         callClaudeCode({
           cwd: ctx.projectRoot,
           model,
-          prompt:
-            `Implement the following execution plan for target "${state.active_target}". ` +
-            "Follow each task's Spec and satisfy its Test Contract. If the project has a " +
-            "user-facing UI, also implement Maestro E2E flows under `.maestro/` covering the " +
-            "main flows, wired to an npm `test:e2e` script; save any `takeScreenshot` output " +
-            `under \`.factory/e2e-artifacts/\`.\n\n${plan}`,
+          prompt,
           allowedTools: "Read,Edit,Write,Bash(npm *),Bash(git *)",
         }),
       );
@@ -199,6 +236,10 @@ export function createNodes(ctx: FactoryContext) {
         // project — running inspect/test/heal against it next would just
         // waste a heal loop "fixing" a project that was never touched.
         status: result.success ? "TESTING" : "FAILED",
+        // A targeted fix consumes one attempt from the same shared budget
+        // heal uses — otherwise triage could loop test -> triage ->
+        // architect indefinitely without ever hitting max_retries.
+        ...(isTargetedFix ? { retry_count: state.retry_count + 1 } : {}),
         logs: withLog(
           state,
           "architect",
@@ -524,14 +565,61 @@ export function createNodes(ctx: FactoryContext) {
     });
   }
 
+  async function triageNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "triage", async () => {
+      const model = process.env.AUTOFACTORY_TRIAGE_MODEL ?? "deepseek-r1:14b";
+      const lastFailure = [...state.logs].reverse().find((l) => l.node === "test" || l.node === "e2eTest");
+
+      const result = await runEngineCall(reporter, "triage", "local-http", model, () =>
+        callOllama({
+          model,
+          prompt:
+            "You are a build/test triage assistant in an automated software factory. A " +
+            "validation step just failed. Based on the error below, decide the single best " +
+            "next action.\n\n" +
+            "- heal: the fix is a small, local code/test change (wrong assertion, small bug, " +
+            "timing issue) a focused code-fixing pass can resolve without broader context.\n" +
+            "- architect: the fix needs broader context or bigger changes (new files, " +
+            "config/dependency/build setup, or something that needs real investigation).\n" +
+            "- fail: the issue needs a human (credentials, a product/design decision, or " +
+            "something clearly outside automated reach).\n\n" +
+            "Respond with EXACTLY this format, nothing else:\n" +
+            "ACTION: <heal|architect|fail>\n" +
+            "REASON: <one sentence>\n" +
+            "INSTRUCTIONS: <specific, actionable instructions for whoever handles this next>\n\n" +
+            `FAILURE (from "${lastFailure?.node ?? "unknown"}"):\n${lastFailure?.message ?? "(no details available)"}`,
+        }),
+      );
+
+      const decision = result.success
+        ? parseTriageResponse(result.text)
+        : { action: "heal" as const, reason: `Triage call failed: ${result.error}`, instructions: "" };
+
+      return {
+        triage_action: decision.action,
+        triage_instructions: decision.instructions,
+        logs: withLog(state, "triage", `Decision: ${decision.action} — ${decision.reason}`, {
+          engine: "local-http",
+          model,
+          durationMs: result.durationMs,
+          tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut,
+          success: result.success,
+        }),
+      };
+    });
+  }
+
   async function healNode(state: FactoryState): Promise<Partial<FactoryState>> {
     return withNodeTiming(reporter, "heal", async () => {
       const model = process.env.AUTOFACTORY_HEAL_MODEL ?? "hermes3:8b";
       const nextRetryCount = state.retry_count + 1;
       // Without this, OpenCode gets a fully generic prompt with no idea what
-      // actually broke (unit test or E2E) — it can only guess. The most
-      // recent log entry is whichever of test/e2eTest just failed.
-      const lastFailure = state.logs.at(-1);
+      // actually broke — it can only guess. heal is now always reached via
+      // triage, so state.logs.at(-1) would be triage's own decision log,
+      // not the failure itself — search back for the actual test/e2eTest
+      // entry instead.
+      const lastFailure = [...state.logs].reverse().find((l) => l.node === "test" || l.node === "e2eTest");
 
       const result = await runEngineCall(reporter, "heal", "local-cli", model, () =>
         callOpenCode({
@@ -540,6 +628,7 @@ export function createNodes(ctx: FactoryContext) {
           prompt:
             "The test suite is failing. Inspect the failing tests and source, then fix the code " +
             "so all tests pass." +
+            (state.triage_instructions ? `\n\nTriage guidance:\n${state.triage_instructions}` : "") +
             (lastFailure ? `\n\nMost recent failure (from "${lastFailure.node}"):\n${lastFailure.message}` : ""),
         }),
       );
@@ -589,6 +678,7 @@ export function createNodes(ctx: FactoryContext) {
     visualReviewNode,
     securityCheckNode,
     deployNode,
+    triageNode,
     healNode,
     finalizeNode,
     failNode,

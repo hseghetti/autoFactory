@@ -21,6 +21,7 @@ export function buildGraph(ctx: FactoryContext) {
     .addNode("visualReview", nodes.visualReviewNode)
     .addNode("securityCheck", nodes.securityCheckNode)
     .addNode("deploy", nodes.deployNode)
+    .addNode("triage", nodes.triageNode)
     .addNode("heal", nodes.healNode)
     .addNode("finalize", nodes.finalizeNode)
     .addNode("fail", nodes.failNode)
@@ -45,11 +46,16 @@ export function buildGraph(ctx: FactoryContext) {
     .addConditionalEdges("test", (state: FactoryState) => {
       if (state.checkpoints.tests_passed) return "e2eTest";
       if (state.retry_count >= state.max_retries) return "fail";
-      return "heal";
+      return "triage";
     })
     .addConditionalEdges("e2eTest", (state: FactoryState) => {
       if (state.checkpoints.e2e_passed) return "visualReview";
       if (state.retry_count >= state.max_retries) return "fail";
+      return "triage";
+    })
+    .addConditionalEdges("triage", (state: FactoryState) => {
+      if (state.triage_action === "architect") return "architect";
+      if (state.triage_action === "fail") return "fail";
       return "heal";
     })
     .addEdge("heal", "test")

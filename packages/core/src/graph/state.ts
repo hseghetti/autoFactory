@@ -42,6 +42,8 @@ export const FactoryStatusSchema = z.enum([
   "FAILED",
 ]);
 
+export const TriageActionSchema = z.enum(["heal", "architect", "fail"]);
+
 export const FactoryStateZod = z.object({
   current_step: z.number(),
   status: FactoryStatusSchema,
@@ -51,6 +53,11 @@ export const FactoryStateZod = z.object({
   retry_count: z.number(),
   checkpoints: CheckpointsSchema,
   logs: z.array(LogEntrySchema),
+  // Set by triageNode after a test/e2eTest failure, consumed by the graph's
+  // conditional edge (routing) and by architectNode/healNode (prompt
+  // content). Not a checkpoint — it's a routing hint, not a pass/fail gate.
+  triage_action: TriageActionSchema.optional(),
+  triage_instructions: z.string().optional(),
 });
 
 // Graph-typed state, built from the same field definitions used to
@@ -62,6 +69,7 @@ export type Checkpoints = z.infer<typeof CheckpointsSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type EngineKind = z.infer<typeof EngineKindSchema>;
 export type FactoryStatus = z.infer<typeof FactoryStatusSchema>;
+export type TriageAction = z.infer<typeof TriageActionSchema>;
 
 export const INITIAL_STATE: FactoryState = {
   current_step: 1,

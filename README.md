@@ -101,14 +101,14 @@ and *where* a human needs to approve before it continues.
    [ test ] <-------------------------+       (unit tests, e.g. `npm test`)
           |  fail (retries left)      |
           v                           |
-   [ heal ] --------- OpenCode + local model attempts a fix
-          |  (loops back to test) ----+
+   [ triage ] -- local model classifies the failure: heal | architect | fail
+          |  (heal or architect loop back to test) ------------------------+
           |
           v  pass
    [ e2eTest ] --------------------------+    (`npm run test:e2e`, e.g. Maestro — skipped with
           |  fail (retries left)         |     a warning, not blocked, if no script exists)
           v                              |
-   [ heal ] (same node/budget as above) -+
+   [ triage ] (same node/budget as above)+
           |
           v  pass, or no test:e2e script found
    [ visualReview ] -- opt-in: Claude Code CLI reviews E2E screenshots vs UX_WIREFRAMES.md (advisory)
@@ -125,6 +125,45 @@ and *where* a human needs to approve before it continues.
 
 Every node appends to `.factory/STATE.json`'s `logs`, so `autofactory status`
 always tells you exactly where a run stopped and why.
+
+## Triage: routing around unplanned failures
+
+A real run against a from-scratch mobile project surfaced a long chain of
+things nobody explicitly planned for: a native module missing from a test
+environment, a stale build artifact with the wrong config baked in, a wrong
+config key name, a reproducible navigation bug. Before triage existed, every
+one of those went to the same place — `heal` (a local model, a fully generic
+"fix the failing tests" prompt) — until `retry_count` ran out. That's fine
+for a typo or a flaky assertion; it's not enough for "this needs a dev-client
+build" or "this needs someone to actually read the navigation code."
+
+`triage` sits between a `test`/`e2eTest` failure and whatever happens next.
+It's a **local model** (`AUTOFACTORY_TRIAGE_MODEL`, default
+`deepseek-r1:14b`) doing a deliberately narrow job — not full bug diagnosis
+(the same local models used elsewhere in this pipeline have already shown
+fairly generic, low-signal output on open-ended review tasks), but a
+3-way classification with a fixed, parseable output format:
+
+- **`heal`**: a small, local, mechanical fix — OpenCode's existing loop
+  handles it, now with triage's instructions added to its prompt alongside
+  the raw failure.
+- **`architect`**: needs broader context or real investigation (config,
+  dependencies, something that needs Read/Edit/Bash to actually find the
+  cause) — routes back to `architect` with a targeted "fix this specific
+  issue" prompt instead of "implement the whole plan," and consumes one
+  attempt from the same shared `retry_count` budget `heal` uses.
+- **`fail`**: needs a human (credentials, a product decision, something
+  clearly outside automated reach) — escalates immediately instead of
+  burning retries on something no amount of retrying will fix.
+
+If the local model doesn't follow the format, `triage` falls back to `heal`
+— the same thing that happened before triage existed, so a bad response
+never makes things worse than the pre-triage baseline. This is intentionally
+scoped to `test`/`e2eTest` failures only, not every node: the rest of the
+pipeline (`plan` → `architect` → `inspect` → `test` → ... → `finalize`) stays
+exactly as deterministic as it already was. `architect`'s own failures
+(auth, network) and `deploy` failures (credentials, infra) fail-fast instead
+of going through triage — retrying blindly doesn't fix either.
 
 ## Observability
 
@@ -366,7 +405,13 @@ tool. In particular:
   steps are side-effect-light and reasonably idempotent, `deploy` aside)
   but not free. `start --revalidate`/`resume --revalidate` are the one
   explicit, safe way to re-enter that chain on a `DONE` project without
-  redoing `plan`/`architect`.
+  redoing `plan`/`architect`. Same caveat applies to `triage`: a crash
+  between `triage` and `heal`/`architect` resumes via `status: HEALING`
+  straight into `heal`, not back through `triage` — a reasonable fallback,
+  not a full re-triage.
+- `triage` (see above) only covers `test`/`e2eTest` failures for now. If a
+  run gets stuck in a way that pattern doesn't reach, it still just fails
+  after `max_retries` like before triage existed.
 
 ## Hardware & platform caveats
 
