@@ -52,7 +52,12 @@ export async function callClaudeCode(params: {
   );
 
   if (params.allowedTools) {
-    args.push("--allowedTools", params.allowedTools);
+    // --allowedTools is variadic (`<tools...>`); passed as a separate arg
+    // it greedily swallows the prompt string that follows it too, leaving
+    // no positional prompt for the CLI ("Input must be provided either
+    // through stdin or as a prompt argument"). The `=` form pins it to a
+    // single argument regardless of what comes after.
+    args.push(`--allowedTools=${params.allowedTools}`);
   }
 
   args.push(params.prompt);
