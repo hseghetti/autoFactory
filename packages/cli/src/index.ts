@@ -32,6 +32,7 @@ program
   .command("status")
   .description("Print the current graph state")
   .option("-d, --dir <path>", "target project directory", process.cwd())
-  .action(async (opts: { dir: string }) => statusCommand(opts.dir));
+  .option("-w, --watch", "poll .factory/STATE.json every 2s and reprint on change", false)
+  .action(async (opts: { dir: string; watch: boolean }) => statusCommand(opts.dir, { watch: opts.watch }));
 
 await program.parseAsync(process.argv);

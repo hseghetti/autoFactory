@@ -1,17 +1,16 @@
 import { join } from "node:path";
 import chalk from "chalk";
-import { StateManager, buildGraph } from "@autofactory/core";
+import { ConsoleReporter, StateManager, buildGraph } from "@autofactory/core";
+import { runGraph } from "./run-graph.js";
 
 export async function startCommand(targetDir: string): Promise<void> {
   const stateManager = new StateManager(join(targetDir, ".factory", "STATE.json"));
   const initialState = await stateManager.load();
 
-  console.log(chalk.cyan(`Starting graph from status=${initialState.status}...`));
+  const reporter = new ConsoleReporter();
+  const graph = buildGraph({ projectRoot: targetDir, reporter });
+  const finalState = await runGraph(graph, initialState, stateManager, reporter);
 
-  const graph = buildGraph({ projectRoot: targetDir });
-  const finalState = await graph.invoke(initialState);
-
-  await stateManager.save(finalState);
   reportFinalStatus(finalState.status);
 }
 

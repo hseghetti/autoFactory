@@ -4,6 +4,9 @@ export interface OpenCodeResult {
   success: boolean;
   output: string;
   error?: string;
+  durationMs?: number;
+  // OpenCode's `--format json` doesn't reliably expose token usage (see
+  // note below), so token counts are intentionally left undefined here.
 }
 
 /**
@@ -28,17 +31,19 @@ export async function callOpenCode(params: {
 
   args.push(params.prompt);
 
+  const startedAt = Date.now();
   try {
     const { stdout, exitCode } = await execa("opencode", args, {
       cwd: params.cwd,
       reject: false,
     });
+    const durationMs = Date.now() - startedAt;
 
     if (exitCode !== 0) {
-      return { success: false, output: stdout, error: `opencode exited with code ${exitCode}` };
+      return { success: false, output: stdout, error: `opencode exited with code ${exitCode}`, durationMs };
     }
 
-    return { success: true, output: stdout };
+    return { success: true, output: stdout, durationMs };
   } catch (error) {
     if (isEnoent(error)) {
       return {

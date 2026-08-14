@@ -5,11 +5,19 @@ export interface ClaudeCodeResult {
   output: string;
   costUsd?: number;
   error?: string;
+  durationMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 interface ClaudeCodeJsonResult {
   result?: string;
   total_cost_usd?: number;
+  duration_ms?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
 
 /**
@@ -51,7 +59,14 @@ export async function callClaudeCode(params: {
     }
 
     const parsed = JSON.parse(stdout) as ClaudeCodeJsonResult;
-    return { success: true, output: parsed.result ?? stdout, costUsd: parsed.total_cost_usd };
+    return {
+      success: true,
+      output: parsed.result ?? stdout,
+      costUsd: parsed.total_cost_usd,
+      durationMs: parsed.duration_ms,
+      tokensIn: parsed.usage?.input_tokens,
+      tokensOut: parsed.usage?.output_tokens,
+    };
   } catch (error) {
     if (isEnoent(error)) {
       return {

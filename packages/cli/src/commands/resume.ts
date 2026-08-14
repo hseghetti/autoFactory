@@ -1,8 +1,9 @@
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import chalk from "chalk";
-import { StateManager, buildGraph } from "@autofactory/core";
+import { ConsoleReporter, StateManager, buildGraph } from "@autofactory/core";
 import { reportFinalStatus } from "./start.js";
+import { runGraph } from "./run-graph.js";
 
 export async function resumeCommand(targetDir: string): Promise<void> {
   const stateManager = new StateManager(join(targetDir, ".factory", "STATE.json"));
@@ -26,9 +27,9 @@ export async function resumeCommand(targetDir: string): Promise<void> {
     state = await stateManager.setCheckpoint(state, "plan_approved", true);
   }
 
-  const graph = buildGraph({ projectRoot: targetDir });
-  const finalState = await graph.invoke(state);
+  const reporter = new ConsoleReporter();
+  const graph = buildGraph({ projectRoot: targetDir, reporter });
+  const finalState = await runGraph(graph, state, stateManager, reporter);
 
-  await stateManager.save(finalState);
   reportFinalStatus(finalState.status);
 }

@@ -7,10 +7,22 @@ export const CheckpointsSchema = z.object({
   security_approved: z.boolean(),
 });
 
+export const EngineKindSchema = z.enum(["cloud-cli", "local-cli", "local-http", "process"]);
+
 export const LogEntrySchema = z.object({
   timestamp: z.string(),
   node: z.string(),
   message: z.string(),
+  // Observability metadata, populated for entries that represent an engine
+  // call or subprocess run (see packages/core/src/observability). Absent on
+  // plain informational log lines (checkpoints, routing decisions, etc).
+  engine: EngineKindSchema.optional(),
+  model: z.string().optional(),
+  durationMs: z.number().optional(),
+  tokensIn: z.number().optional(),
+  tokensOut: z.number().optional(),
+  costUsd: z.number().optional(),
+  success: z.boolean().optional(),
 });
 
 export const FactoryStatusSchema = z.enum([
@@ -42,6 +54,7 @@ export const FactoryGraphState = new StateSchema(FactoryStateZod.shape);
 export type FactoryState = z.infer<typeof FactoryStateZod>;
 export type Checkpoints = z.infer<typeof CheckpointsSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
+export type EngineKind = z.infer<typeof EngineKindSchema>;
 export type FactoryStatus = z.infer<typeof FactoryStatusSchema>;
 
 export const INITIAL_STATE: FactoryState = {

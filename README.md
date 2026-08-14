@@ -114,6 +114,60 @@ and *where* a human needs to approve before it continues.
 Every node appends to `.factory/STATE.json`'s `logs`, so `autofactory status`
 always tells you exactly where a run stopped and why.
 
+## Observability
+
+`autofactory start`/`resume` used to go silent for the entire duration of a
+Claude Code CLI or Ollama call — no output until the whole graph finished, so
+a slow run and a hung one looked identical. Every node now reports live:
+
+```
+▶ Starting graph run (resuming from AWAITING_APPROVAL)
+
+- [architect] cloud-cli · claude-sonnet-5 — running (34.2s)     <- updates in place on a TTY
+OK [architect] cloud-cli · claude-sonnet-5 — done in 41.8s  |  tokens 4200 in / 1100 out  |  cost $0.0341
+  [architect] step finished in 41.8s
+OK [inspect] local-http · qwen2.5-coder:32b — done in 6.1s  |  tokens 1500 in / 220 out  |  cost -
+...
+Run summary
+  node       engine      model               duration  tokens             cost      
+  architect  cloud-cli   claude-sonnet-5     41.8s     4200 in / 1100 out $0.0341   ok
+  inspect    local-http  qwen2.5-coder:32b   6.1s      1500 in / 220 out  -         ok
+
+  1 cloud call(s), 3 local call(s), total cloud cost $0.0341, wall time 68.9s
+```
+
+On a non-TTY stream (piped output, CI logs) the in-place spinner is replaced
+by periodic "still running" heartbeat lines instead, so it never looks stuck
+there either.
+
+This isn't just console decoration — every one of those numbers is also
+written to `.factory/STATE.json`'s `logs` (engine, model, duration, token
+counts, cost where the engine exposes it) as each node finishes, not just
+once at the very end. That means:
+
+- `autofactory status [--dir <path>]` shows the last 10 log entries with
+  that same engine/model/duration/token detail, plus a running total of
+  cloud vs. local calls and cloud cost — useful after a run finishes, or
+  from a second terminal while one is in progress.
+- `autofactory status --watch` polls every 2s and reprints on change, so you
+  can watch a run from a different terminal (or after backgrounding it)
+  without staring at the process that's actually running the graph.
+- If the process is killed or crashes mid-run, `STATE.json` reflects the
+  last node that actually completed instead of whatever was there before
+  the run started.
+
+What's actually captured per engine:
+
+- **Claude Code CLI** (`cloud-cli`): duration, input/output tokens, and cost
+  in USD, parsed from its `--output-format json` response.
+- **Ollama** (`local-http`, used by `plan`/`inspect`/`securityCheck`):
+  duration and input/output tokens, parsed from `/api/generate`'s response.
+- **OpenCode** (`local-cli`, used by `heal`): only duration. OpenCode's
+  `--format json` emits a raw event stream rather than a single JSON object
+  (see `packages/core/src/router/engines/opencode.ts`), so token/cost figures
+  aren't reliably parseable today and are left blank rather than guessed.
+- **`npm test`** (`process`): duration and pass/fail only.
+
 ## Project structure
 
 ```
@@ -195,7 +249,7 @@ it globally yet — run these via `node packages/cli/dist/index.js <command>`
 | `autofactory init [--dir <path>] [--force]` | Scaffolds `.factory/{BRIEF.md,UX_WIREFRAMES.md,PLAN.md,STATE.json}` in the target project if they don't already exist. `--force` deletes and regenerates any that do, after an interactive confirmation (this discards any in-progress plan/approvals/run state). |
 | `autofactory start [--dir <path>]` | Loads `STATE.json` and runs the graph forward from wherever it left off. |
 | `autofactory resume [--dir <path>]` | Only useful when `status` is `AWAITING_APPROVAL`; prompts you to approve the plan, then continues the run. |
-| `autofactory status [--dir <path>]` | Prints the current status, checkpoints, retry count, and the most recent log entry. |
+| `autofactory status [--dir <path>] [--watch]` | Prints status, checkpoints, retry count, usage totals, and the last 10 log entries (engine/model/duration/tokens/cost). `--watch` polls every 2s and reprints on change. |
 
 (`npm run factory:init/start/resume/status` are shortcuts for the same
 commands against the repo root.)

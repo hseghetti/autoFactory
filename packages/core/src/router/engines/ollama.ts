@@ -2,6 +2,16 @@ export interface OllamaResult {
   success: boolean;
   text: string;
   error?: string;
+  durationMs?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+interface OllamaGenerateResponse {
+  response?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+  total_duration?: number;
 }
 
 /**
@@ -30,8 +40,15 @@ export async function callOllama(params: {
       };
     }
 
-    const data = (await response.json()) as { response?: string };
-    return { success: true, text: data.response ?? "" };
+    const data = (await response.json()) as OllamaGenerateResponse;
+    return {
+      success: true,
+      text: data.response ?? "",
+      tokensIn: data.prompt_eval_count,
+      tokensOut: data.eval_count,
+      // total_duration is in nanoseconds.
+      durationMs: data.total_duration !== undefined ? Math.round(data.total_duration / 1e6) : undefined,
+    };
   } catch (error) {
     return {
       success: false,
