@@ -13,7 +13,8 @@ program
   .command("init")
   .description("Scaffold .factory/ in the target project")
   .option("-d, --dir <path>", "target project directory", process.cwd())
-  .action(async (opts: { dir: string }) => initCommand(opts.dir));
+  .option("-f, --force", "delete and regenerate existing .factory/ files (prompts for confirmation)", false)
+  .action(async (opts: { dir: string; force: boolean }) => initCommand(opts.dir, { force: opts.force }));
 
 program
   .command("start")

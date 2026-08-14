@@ -45,8 +45,8 @@ echo "--> Pulling Local Inference Models via Ollama..."
 echo "   [1/3] Pulling Qwen 2.5 Coder 32B (Architecture & Inspection)..."
 ollama pull qwen2.5-coder:32b
 
-echo "   [2/3] Pulling Hermes 3 36B (Local Tool-Calling & Self-Healing)..."
-ollama pull hermes3:36b
+echo "   [2/3] Pulling Hermes 3 8B (Local Tool-Calling & Self-Healing)..."
+ollama pull hermes3:8b
 
 echo "   [3/3] Pulling DeepSeek-R1 14B (Reasoning & UX Briefs)..."
 ollama pull deepseek-r1:14b

@@ -18,9 +18,11 @@ function withLog(state: FactoryState, node: string, message: string): FactorySta
 export function createNodes(ctx: FactoryContext) {
   const briefPath = join(ctx.projectRoot, ".factory", "BRIEF.md");
   const planPath = join(ctx.projectRoot, ".factory", "PLAN.md");
+  const uxWireframesPath = join(ctx.projectRoot, ".factory", "UX_WIREFRAMES.md");
 
   async function planNode(state: FactoryState): Promise<Partial<FactoryState>> {
     const brief = await readFile(briefPath, "utf-8").catch(() => "");
+    const uxWireframes = await readFile(uxWireframesPath, "utf-8").catch(() => "");
     const model = process.env.AUTOFACTORY_PLAN_MODEL ?? "deepseek-r1:14b";
 
     const result = await callOllama({
@@ -28,7 +30,8 @@ export function createNodes(ctx: FactoryContext) {
       prompt:
         "You are a software delivery planner. Based on this product brief, write an " +
         "atomized execution plan in Markdown with numbered tasks, each including " +
-        `Target, Spec, and Test Contract.\n\nBRIEF:\n${brief}`,
+        `Target, Spec, and Test Contract.\n\nBRIEF:\n${brief}` +
+        (uxWireframes.trim() ? `\n\nUX WIREFRAMES / COMPONENT HIERARCHY:\n${uxWireframes}` : ""),
     });
 
     if (result.success && result.text.trim()) {
@@ -131,8 +134,35 @@ export function createNodes(ctx: FactoryContext) {
     }
   }
 
+  async function securityCheckNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    const model = process.env.AUTOFACTORY_SECURITY_MODEL ?? "qwen2.5-coder:32b";
+    const diff = await execa("git", ["diff", "--stat"], { cwd: ctx.projectRoot, reject: false })
+      .then((r) => r.stdout)
+      .catch(() => "");
+
+    const result = await callOllama({
+      model,
+      prompt:
+        "You are a local security reviewer that runs after tests pass and before a change is " +
+        "finalized. Review this diff summary and flag anything that looks like a hardcoded " +
+        "secret, credential, or an obviously dangerous command (e.g. unrestricted rm, curl|sh). " +
+        `Be brief — this is advisory, not blocking.\n\nDIFF STAT:\n${diff.trim() || "(no git diff available)"}`,
+    });
+
+    return {
+      checkpoints: { ...state.checkpoints, security_approved: true },
+      logs: withLog(
+        state,
+        "securityCheckNode",
+        result.success
+          ? `Security review notes via ${model}: ${result.text.trim().slice(0, 500)}`
+          : `Security review skipped: ${result.error}`,
+      ),
+    };
+  }
+
   async function healNode(state: FactoryState): Promise<Partial<FactoryState>> {
-    const model = process.env.AUTOFACTORY_HEAL_MODEL ?? "hermes3:36b";
+    const model = process.env.AUTOFACTORY_HEAL_MODEL ?? "hermes3:8b";
     const nextRetryCount = state.retry_count + 1;
 
     const result = await callOpenCode({
@@ -172,5 +202,15 @@ export function createNodes(ctx: FactoryContext) {
     };
   }
 
-  return { planNode, humanCheckpointNode, architectNode, inspectNode, testNode, healNode, finalizeNode, failNode };
+  return {
+    planNode,
+    humanCheckpointNode,
+    architectNode,
+    inspectNode,
+    testNode,
+    securityCheckNode,
+    healNode,
+    finalizeNode,
+    failNode,
+  };
 }

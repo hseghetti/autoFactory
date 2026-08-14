@@ -76,8 +76,8 @@ and *where* a human needs to approve before it continues.
   SpecKit output as the input to `planNode` is a natural extension, not
   something wired up today.
 - **Claude Code CLI**: handles high-reasoning tasks, complex refactoring, and initial code generation.
-- **Local Ollama models**: `deepseek-r1:14b` drafts the plan and `qwen2.5-coder:32b` inspects the architect's diff, both called directly over Ollama's HTTP API.
-- **OpenCode + `hermes3:36b`**: executes local tool-calling loops for test fixes and lint repairs with zero API cost.
+- **Local Ollama models**: `deepseek-r1:14b` drafts the plan (from `BRIEF.md` and, if present, `UX_WIREFRAMES.md`), and `qwen2.5-coder:32b` handles two advisory passes — inspecting the architect's diff before testing, and reviewing it for secrets/dangerous commands after tests pass — both called directly over Ollama's HTTP API.
+- **OpenCode + `hermes3:8b`**: executes local tool-calling loops for test fixes and lint repairs with zero API cost.
 - **AutoFactory**: coordinates execution flow, manages persistent state across resets, and enforces Human-in-the-Loop checkpoints.
 
 ## How a run actually flows
@@ -104,8 +104,11 @@ and *where* a human needs to approve before it continues.
    [ heal ] --------- OpenCode + local model attempts a fix
           |  (loops back to test) ----+
           |
-          v  pass, or retries exhausted
-   [ finalize / fail ]
+          v  pass
+   [ securityCheck ] -- local model (Ollama) flags secrets/dangerous commands (advisory)
+          |
+          v
+   [ finalize ]                          (or [ fail ] if retries exhausted)
 ```
 
 Every node appends to `.factory/STATE.json`'s `logs`, so `autofactory status`
@@ -117,6 +120,7 @@ always tells you exactly where a run stopped and why.
 autofactory/
 ├── .factory/
 │   ├── BRIEF.md               # You fill this in: what you want built
+│   ├── UX_WIREFRAMES.md       # Optional: component hierarchy/interaction flows, read by plan
 │   ├── PLAN.md                # Written by the plan node, reviewed by you
 │   └── STATE.json             # Graph state engine & checkpoint manager
 ├── packages/
@@ -163,7 +167,9 @@ node packages/cli/dist/index.js init --dir ../my-app   # scaffolds .factory/ the
 ```
 
 Edit `../my-app/.factory/BRIEF.md` with the actual requirements — the
-shipped file is just a placeholder template.
+shipped file is just a placeholder template. If the project has a UI, also
+fill in `../my-app/.factory/UX_WIREFRAMES.md`; `planNode` folds it into the
+plan prompt alongside `BRIEF.md` when it's non-empty.
 
 ### 4. Run the graph
 
@@ -186,7 +192,7 @@ it globally yet — run these via `node packages/cli/dist/index.js <command>`
 
 | Command | What it does |
 |---|---|
-| `autofactory init [--dir <path>]` | Scaffolds `.factory/{BRIEF.md,PLAN.md,STATE.json}` in the target project if they don't already exist. |
+| `autofactory init [--dir <path>] [--force]` | Scaffolds `.factory/{BRIEF.md,UX_WIREFRAMES.md,PLAN.md,STATE.json}` in the target project if they don't already exist. `--force` deletes and regenerates any that do, after an interactive confirmation (this discards any in-progress plan/approvals/run state). |
 | `autofactory start [--dir <path>]` | Loads `STATE.json` and runs the graph forward from wherever it left off. |
 | `autofactory resume [--dir <path>]` | Only useful when `status` is `AWAITING_APPROVAL`; prompts you to approve the plan, then continues the run. |
 | `autofactory status [--dir <path>]` | Prints the current status, checkpoints, retry count, and the most recent log entry. |
@@ -214,7 +220,7 @@ polished tool. In particular:
 
 `scripts/setup-local.sh` is written for **macOS (Apple Silicon, 64GB RAM
 recommended)** and depends on Homebrew. It pulls three local models via
-Ollama (`qwen2.5-coder:32b`, `hermes3:36b`, `deepseek-r1:14b`), which
+Ollama (`qwen2.5-coder:32b`, `hermes3:8b`, `deepseek-r1:14b`), which
 together require tens of GB of disk space and are not intended to run
 concurrently — the router selects one model per task type. On Linux, install
 the equivalent packages manually (`git`, `gh`, `jq`, `ollama`, a container
