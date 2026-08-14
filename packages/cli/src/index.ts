@@ -31,13 +31,23 @@ program
   .command("start")
   .description("Run the AutoFactory graph from its current state")
   .option("-d, --dir <path>", "target project directory", process.cwd())
-  .action(async (opts: { dir: string }) => startCommand(opts.dir));
+  .option(
+    "--revalidate",
+    "if status is DONE, re-run test/e2e/security/deploy without touching plan/architect",
+    false,
+  )
+  .action(async (opts: { dir: string; revalidate: boolean }) => startCommand(opts.dir, { revalidate: opts.revalidate }));
 
 program
   .command("resume")
   .description("Resume a graph run paused at a human checkpoint")
   .option("-d, --dir <path>", "target project directory", process.cwd())
-  .action(async (opts: { dir: string }) => resumeCommand(opts.dir));
+  .option(
+    "--revalidate",
+    "if status is DONE, re-run test/e2e/security/deploy without touching plan/architect",
+    false,
+  )
+  .action(async (opts: { dir: string; revalidate: boolean }) => resumeCommand(opts.dir, { revalidate: opts.revalidate }));
 
 program
   .command("status")

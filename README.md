@@ -330,8 +330,8 @@ it globally yet — run these via `node packages/cli/dist/index.js <command>`
 | Command | What it does |
 |---|---|
 | `autofactory init [--dir <path>] [--force] [--target <name>] [--max-retries <n>]` | Scaffolds `.factory/{BRIEF.md,UX_WIREFRAMES.md,PLAN.md,STATE.json}` in the target project if they don't already exist, and `git init`s it if needed. `--force` deletes and regenerates existing files, after an interactive confirmation (this discards any in-progress plan/approvals/run state). `--target`/`--max-retries` set `active_target`/`max_retries` in the generated `STATE.json` (fall back to `$AUTOFACTORY_TARGET`/`$AUTOFACTORY_MAX_RETRIES`, then `web`/`3`); they're only applied when `STATE.json` is actually (re)written. |
-| `autofactory start [--dir <path>]` | Loads `STATE.json` and runs the graph forward from wherever it left off. |
-| `autofactory resume [--dir <path>]` | Only useful when `status` is `AWAITING_APPROVAL`; prompts you to approve the plan, then continues the run. |
+| `autofactory start [--dir <path>] [--revalidate]` | Loads `STATE.json` and runs the graph forward from wherever it left off. If `status` is `DONE`, this is an **idempotent no-op** by default (repeated calls don't redo `plan`/`architect`, which cost real time/money) — pass `--revalidate` to explicitly re-run `test`→`e2eTest`→`visualReview`→`securityCheck`→`deploy`→`finalize` (e.g. after a pipeline upgrade added new stages) without touching plan/architect. |
+| `autofactory resume [--dir <path>] [--revalidate]` | Only useful when `status` is `AWAITING_APPROVAL` (prompts you to approve the plan, then continues) or, with `--revalidate`, when `status` is `DONE` (same behavior as `start --revalidate`). |
 | `autofactory status [--dir <path>] [--watch]` | Prints status, checkpoints, retry count, usage totals, and the last 10 log entries (engine/model/duration/tokens/cost). `--watch` polls every 2s and reprints on change. |
 
 (`npm run factory:init/start/resume/status` are shortcuts for the same
@@ -358,6 +358,15 @@ tool. In particular:
   (if `AUTOFACTORY_DEPLOY_COMMAND` was never set). Check
   `checkpoints.e2e_passed`/`deployed` via `autofactory status`, don't
   assume `DONE` covers everything.
+- Resume granularity is coarse: `status` only distinguishes
+  `AWAITING_APPROVAL`/`HEALING`/`TESTING`/`DONE`/etc., not "which of
+  test/e2eTest/visualReview/securityCheck/deploy already ran." A crash
+  between `test` and `finalize` resumes by re-running `test` onward from
+  the top, not from the exact node that was interrupted — safe (those
+  steps are side-effect-light and reasonably idempotent, `deploy` aside)
+  but not free. `start --revalidate`/`resume --revalidate` are the one
+  explicit, safe way to re-enter that chain on a `DONE` project without
+  redoing `plan`/`architect`.
 
 ## Hardware & platform caveats
 
