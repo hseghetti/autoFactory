@@ -1,5 +1,5 @@
 import { execa } from "execa";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NullReporter, type EngineKind, type Reporter } from "../observability/reporter.js";
 import { callClaudeCode } from "../router/engines/claude-code.js";
@@ -63,6 +63,38 @@ async function getWorkingDiff(projectRoot: string): Promise<string> {
   if (!diff.trim()) return "(no changes detected in the working tree)";
   if (diff.length <= MAX_DIFF_CHARS) return diff;
   return `${diff.slice(0, MAX_DIFF_CHARS)}\n... (diff truncated, ${diff.length - MAX_DIFF_CHARS} more characters)`;
+}
+
+/**
+ * Maestro captures a screenshot at the exact command that failed (not just
+ * explicit `takeScreenshot` calls), under
+ * .factory/e2e-artifacts/<run-timestamp>/<flow>/screenshots/. A local
+ * text-only model can't look at it, but architect (Claude Code CLI) can —
+ * this finds the most recently modified one so a failure that's actually a
+ * rendering/styling problem (not a logic bug) can be diagnosed by looking
+ * at what actually rendered instead of guessing from assertion text alone.
+ */
+async function findLatestScreenshot(projectRoot: string): Promise<string | undefined> {
+  const artifactsDir = join(projectRoot, ".factory", "e2e-artifacts");
+  let newest: { path: string; mtimeMs: number } | undefined;
+
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith(".png")) {
+        const info = await stat(fullPath).catch(() => undefined);
+        if (info && (!newest || info.mtimeMs > newest.mtimeMs)) {
+          newest = { path: fullPath, mtimeMs: info.mtimeMs };
+        }
+      }
+    }
+  }
+
+  await walk(artifactsDir);
+  return newest?.path;
 }
 
 interface TriageDecision {
@@ -215,7 +247,11 @@ export function createNodes(ctx: FactoryContext) {
         ? "A validation step failed and was triaged as needing your attention (not a quick " +
           `mechanical fix). Investigate and fix this in the project (target "${state.active_target}") ` +
           "— you have full Read/Edit/Write/Bash access, use it to find the actual cause rather " +
-          `than guessing.\n\nISSUE:\n${state.triage_instructions}\n\nOriginal execution plan, for context:\n${plan}`
+          "than guessing. If the issue mentions a screenshot path, Read it first — for E2E " +
+          "failures the assertion text alone ('X is not visible') often looks like a trivial " +
+          "bug when it's actually a rendering/styling/build problem, and the screenshot shows " +
+          `which one you're actually dealing with.\n\nISSUE:\n${state.triage_instructions}\n\n` +
+          `Original execution plan, for context:\n${plan}`
         : `Implement the following execution plan for target "${state.active_target}". ` +
           "Follow each task's Spec and satisfy its Test Contract. If the project has a " +
           "user-facing UI, also implement Maestro E2E flows under `.maestro/` covering the " +
@@ -396,11 +432,23 @@ export function createNodes(ctx: FactoryContext) {
       }
 
       const passed = result.success;
-      const message = passed
+      let message = passed
         ? "E2E tests passed."
         : result.error
           ? `Could not run E2E tests: ${result.error}`
           : `E2E tests failed: ${result.stderr || result.stdout}`;
+
+      if (!passed) {
+        // A failed assertion string alone often looks like a trivial
+        // logic bug ("X is not visible") even when the real cause is a
+        // rendering/styling problem — pointing whoever handles this next
+        // at the actual screenshot (Maestro always captures one at the
+        // failing step) lets a vision-capable model check instead of guess.
+        const screenshot = await findLatestScreenshot(ctx.projectRoot);
+        if (screenshot) {
+          message += `\n\nScreenshot at the point of failure: ${screenshot}`;
+        }
+      }
 
       return {
         ...(passed ? {} : { status: "HEALING" as const }),
@@ -583,6 +631,12 @@ export function createNodes(ctx: FactoryContext) {
             "config/dependency/build setup, or something that needs real investigation).\n" +
             "- fail: the issue needs a human (credentials, a product/design decision, or " +
             "something clearly outside automated reach).\n\n" +
+            "IMPORTANT: an E2E failure saying an element 'is not visible' is NOT automatically " +
+            "a small fix — it's often a rendering/styling/build problem (e.g. a CSS framework " +
+            "not applying, a stale native build) that looks identical to a trivial bug from the " +
+            "assertion text alone, but can't be diagnosed without actually looking at what " +
+            "rendered. If a screenshot path is included below, prefer 'architect' for this class " +
+            "of failure — it can view the screenshot and investigate, heal's model cannot.\n\n" +
             "Respond with EXACTLY this format, nothing else:\n" +
             "ACTION: <heal|architect|fail>\n" +
             "REASON: <one sentence>\n" +

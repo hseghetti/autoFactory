@@ -165,6 +165,20 @@ exactly as deterministic as it already was. `architect`'s own failures
 (auth, network) and `deploy` failures (credentials, infra) fail-fast instead
 of going through triage — retrying blindly doesn't fix either.
 
+**Screenshot-aware triage.** The first real run also showed the limit of
+text-only classification: an E2E failure like `"Submit answer" is not
+visible` reads as a trivial bug, but the actual cause was NativeWind/Tailwind
+not applying in that build — components were rendering with no styling, not
+missing. `triage`'s local model has no way to tell those apart from the
+assertion text alone. `e2eTest` now locates the screenshot Maestro always
+captures at the failing step (`.factory/e2e-artifacts/**/screenshots/`) and
+includes its path in the failure message; `triage`'s prompt explicitly
+treats "element not visible" as a class of failure that usually needs
+`architect` rather than `heal`, and when it routes there, architect is
+told to `Read` the screenshot before touching any code — using the vision
+capability it already has (see `visualReview` above) to check what actually
+rendered instead of guessing from assertion text.
+
 ## Observability
 
 `autofactory start`/`resume` used to go silent for the entire duration of a
