@@ -209,6 +209,12 @@ cp .env.example .env
 claude login   # or set ANTHROPIC_API_KEY in .env
 ```
 
+Either works: the `architect` step only passes Claude Code's `--bare` flag
+(faster, skips hooks/LSP/CLAUDE.md discovery) when `ANTHROPIC_API_KEY` is
+set, because `--bare` ignores the OAuth session `claude login` creates — it
+strictly reads `ANTHROPIC_API_KEY`/`apiKeyHelper`. Without an API key it
+falls back to a normal `claude -p` call, which does read the OAuth session.
+
 ### 3. Point it at a project and describe what to build
 
 AutoFactory operates on a **target project directory** — the one that has

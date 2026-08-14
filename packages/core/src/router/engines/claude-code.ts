@@ -12,6 +12,7 @@ export interface ClaudeCodeResult {
 
 interface ClaudeCodeJsonResult {
   result?: string;
+  is_error?: boolean;
   total_cost_usd?: number;
   duration_ms?: number;
   usage?: {
@@ -31,16 +32,24 @@ export async function callClaudeCode(params: {
   model?: string;
   allowedTools?: string;
 }): Promise<ClaudeCodeResult> {
-  const args = [
-    "-p",
-    "--bare",
+  const args = ["-p"];
+
+  // --bare restricts auth to ANTHROPIC_API_KEY/apiKeyHelper and never reads
+  // the OAuth session created by `claude login` (see `claude --help`). Only
+  // use it when an API key is actually configured, so the documented
+  // `claude login` path (no ANTHROPIC_API_KEY) keeps working.
+  if (process.env.ANTHROPIC_API_KEY) {
+    args.push("--bare");
+  }
+
+  args.push(
     "--model",
     params.model ?? process.env.AUTOFACTORY_ARCHITECT_MODEL ?? "claude-sonnet-5",
     "--permission-mode",
     "acceptEdits",
     "--output-format",
     "json",
-  ];
+  );
 
   if (params.allowedTools) {
     args.push("--allowedTools", params.allowedTools);
@@ -49,13 +58,18 @@ export async function callClaudeCode(params: {
   args.push(params.prompt);
 
   try {
-    const { stdout, exitCode } = await execa("claude", args, {
+    const { stdout, stderr, exitCode } = await execa("claude", args, {
       cwd: params.cwd,
       reject: false,
     });
 
     if (exitCode !== 0) {
-      return { success: false, output: stdout, error: `claude exited with code ${exitCode}` };
+      // Claude Code CLI reports failures (auth errors, API errors) as JSON
+      // on stdout with is_error:true — not on stderr — so parse it first
+      // and only fall back to raw output if that JSON isn't there.
+      const parsedError = tryParseJson(stdout);
+      const detail = parsedError?.result || stderr.trim() || stdout.trim() || `exit code ${exitCode}`;
+      return { success: false, output: stdout, error: `claude failed: ${detail}` };
     }
 
     const parsed = JSON.parse(stdout) as ClaudeCodeJsonResult;
@@ -76,6 +90,14 @@ export async function callClaudeCode(params: {
       };
     }
     return { success: false, output: "", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function tryParseJson(raw: string): ClaudeCodeJsonResult | undefined {
+  try {
+    return JSON.parse(raw) as ClaudeCodeJsonResult;
+  } catch {
+    return undefined;
   }
 }
 

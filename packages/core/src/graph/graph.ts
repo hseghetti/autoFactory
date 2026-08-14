@@ -37,7 +37,7 @@ export function buildGraph(ctx: FactoryContext) {
     .addConditionalEdges("humanCheckpoint", (state: FactoryState) =>
       state.checkpoints.plan_approved ? "architect" : END,
     )
-    .addEdge("architect", "inspect")
+    .addConditionalEdges("architect", (state: FactoryState) => (state.status === "FAILED" ? "fail" : "inspect"))
     .addEdge("inspect", "test")
     .addConditionalEdges("test", (state: FactoryState) => {
       if (state.checkpoints.tests_passed) return "securityCheck";

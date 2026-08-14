@@ -165,7 +165,10 @@ export function createNodes(ctx: FactoryContext) {
       );
 
       return {
-        status: "TESTING",
+        // A failed architecture pass means nothing changed in the target
+        // project — running inspect/test/heal against it next would just
+        // waste a heal loop "fixing" a project that was never touched.
+        status: result.success ? "TESTING" : "FAILED",
         logs: withLog(
           state,
           "architect",
@@ -338,10 +341,16 @@ export function createNodes(ctx: FactoryContext) {
   }
 
   async function failNode(state: FactoryState): Promise<Partial<FactoryState>> {
-    return withNodeTiming(reporter, "fail", async () => ({
-      status: "FAILED",
-      logs: withLog(state, "fail", `Exceeded max_retries (${state.max_retries}); manual intervention required.`),
-    }));
+    return withNodeTiming(reporter, "fail", async () => {
+      const reason =
+        state.status === "FAILED"
+          ? "architect step failed (see the preceding log entry)"
+          : `exceeded max_retries (${state.max_retries})`;
+      return {
+        status: "FAILED",
+        logs: withLog(state, "fail", `Graph run failed: ${reason}. Manual intervention required.`),
+      };
+    });
   }
 
   return {
