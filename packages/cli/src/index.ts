@@ -14,7 +14,18 @@ program
   .description("Scaffold .factory/ in the target project")
   .option("-d, --dir <path>", "target project directory", process.cwd())
   .option("-f, --force", "delete and regenerate existing .factory/ files (prompts for confirmation)", false)
-  .action(async (opts: { dir: string; force: boolean }) => initCommand(opts.dir, { force: opts.force }));
+  .option(
+    "-t, --target <name>",
+    "value written to active_target in STATE.json (what architect is told to build); falls back to $AUTOFACTORY_TARGET, then \"web\"",
+  )
+  .option(
+    "-r, --max-retries <n>",
+    "value written to max_retries in STATE.json; falls back to $AUTOFACTORY_MAX_RETRIES, then 3",
+    (value: string) => Number.parseInt(value, 10),
+  )
+  .action(async (opts: { dir: string; force: boolean; target?: string; maxRetries?: number }) =>
+    initCommand(opts.dir, { force: opts.force, target: opts.target, maxRetries: opts.maxRetries }),
+  );
 
 program
   .command("start")

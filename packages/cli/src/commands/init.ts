@@ -2,6 +2,7 @@ import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import chalk from "chalk";
+import { execa } from "execa";
 import { INITIAL_STATE } from "@autofactory/core";
 
 const BRIEF_TEMPLATE = `# Product Brief & Acceptance Criteria
@@ -46,15 +47,34 @@ async function exists(path: string): Promise<boolean> {
     .catch(() => false);
 }
 
-export async function initCommand(targetDir: string, options: { force?: boolean } = {}): Promise<void> {
+function parseIntEnv(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export async function initCommand(
+  targetDir: string,
+  options: { force?: boolean; target?: string; maxRetries?: number } = {},
+): Promise<void> {
   const factoryDir = join(targetDir, ".factory");
   await mkdir(factoryDir, { recursive: true });
+
+  // active_target drives what architectNode tells Claude Code CLI to build
+  // ("Implement the following execution plan for target \"<active_target>\"").
+  // Getting this wrong (e.g. leaving the "web" default for a mobile-only
+  // project) makes the plan and the instructed target contradict each
+  // other, which is exactly the kind of thing a careful architect pass
+  // will stop and ask about instead of guessing.
+  const target = options.target ?? process.env.AUTOFACTORY_TARGET ?? INITIAL_STATE.active_target;
+  const maxRetries = options.maxRetries ?? parseIntEnv(process.env.AUTOFACTORY_MAX_RETRIES) ?? INITIAL_STATE.max_retries;
+  const initialState = { ...INITIAL_STATE, active_target: target, max_retries: maxRetries };
 
   const files: Array<[string, string]> = [
     [join(factoryDir, "BRIEF.md"), BRIEF_TEMPLATE],
     [join(factoryDir, "PLAN.md"), PLAN_TEMPLATE],
     [join(factoryDir, "UX_WIREFRAMES.md"), UX_WIREFRAMES_TEMPLATE],
-    [join(factoryDir, "STATE.json"), `${JSON.stringify(INITIAL_STATE, null, 2)}\n`],
+    [join(factoryDir, "STATE.json"), `${JSON.stringify(initialState, null, 2)}\n`],
   ];
 
   if (options.force) {
@@ -80,12 +100,29 @@ export async function initCommand(targetDir: string, options: { force?: boolean 
     }
   }
 
+  const statePath = join(factoryDir, "STATE.json");
+
   for (const [path, content] of files) {
     if (!options.force && (await exists(path))) {
-      console.log(chalk.yellow(`skip   ${path} (already exists)`));
+      const note = path === statePath && options.target ? ` (--target ${target} NOT applied — re-run with --force)` : "";
+      console.log(chalk.yellow(`skip   ${path} (already exists)${note}`));
       continue;
     }
     await writeFile(path, content, "utf-8");
     console.log(chalk.green(`create ${path}`));
+  }
+
+  const gitDir = join(targetDir, ".git");
+  if (!(await exists(gitDir))) {
+    // inspectNode/securityCheckNode review `git diff --stat`, which is
+    // silently empty (not an error) when the target isn't a git repo at
+    // all — that made those advisory checks useless on a brand-new
+    // project. `git init` is safe/idempotent, so just do it.
+    const result = await execa("git", ["init"], { cwd: targetDir, reject: false });
+    if (result.exitCode === 0) {
+      console.log(chalk.green(`create ${gitDir} (git init)`));
+    } else {
+      console.log(chalk.yellow(`skip   git init failed: ${result.stderr || result.exitCode}`));
+    }
   }
 }

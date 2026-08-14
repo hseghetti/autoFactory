@@ -172,7 +172,9 @@ export function createNodes(ctx: FactoryContext) {
         logs: withLog(
           state,
           "architect",
-          result.success ? "Claude Code CLI completed the architecture pass." : `Claude Code CLI failed: ${result.error}`,
+          result.success
+            ? `Claude Code CLI response: ${result.output.trim().slice(0, 800)}`
+            : `Claude Code CLI failed: ${result.error}`,
           {
             engine: "cloud-cli",
             model,

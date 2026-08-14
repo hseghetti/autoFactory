@@ -223,8 +223,24 @@ that's the current working directory; every CLI command also accepts
 `--dir <path>` to target a different project.
 
 ```bash
-node packages/cli/dist/index.js init --dir ../my-app   # scaffolds .factory/ there
+node packages/cli/dist/index.js init --dir ../my-app --target mobile   # scaffolds .factory/ there
 ```
+
+`--target` matters: it's written to `active_target` in `STATE.json`, and
+`architectNode` puts it verbatim into the prompt it sends Claude Code CLI
+("Implement the following execution plan for target `<active_target>`").
+It defaults to `web` (via `$AUTOFACTORY_TARGET`, then that hardcoded
+fallback) — if your plan describes a mobile/Expo app and you leave the
+default, architect is being told to build the wrong stack, and a careful
+implementation will stop and ask for clarification instead of guessing,
+which looks like a silent no-op in a non-interactive run. Pass whatever
+string makes sense for the project (`web`, `mobile`, `api`, ...) — it's
+just interpolated into that instruction, not validated against anything.
+
+`init` also runs `git init` in the target directory if it isn't a git repo
+yet, so `inspect`/`securityCheck`'s `git diff --stat`-based review has
+something to look at (it's silently a no-op, not an error, in a non-git
+directory).
 
 Edit `../my-app/.factory/BRIEF.md` with the actual requirements — the
 shipped file is just a placeholder template. If the project has a UI, also
@@ -252,7 +268,7 @@ it globally yet — run these via `node packages/cli/dist/index.js <command>`
 
 | Command | What it does |
 |---|---|
-| `autofactory init [--dir <path>] [--force]` | Scaffolds `.factory/{BRIEF.md,UX_WIREFRAMES.md,PLAN.md,STATE.json}` in the target project if they don't already exist. `--force` deletes and regenerates any that do, after an interactive confirmation (this discards any in-progress plan/approvals/run state). |
+| `autofactory init [--dir <path>] [--force] [--target <name>] [--max-retries <n>]` | Scaffolds `.factory/{BRIEF.md,UX_WIREFRAMES.md,PLAN.md,STATE.json}` in the target project if they don't already exist, and `git init`s it if needed. `--force` deletes and regenerates existing files, after an interactive confirmation (this discards any in-progress plan/approvals/run state). `--target`/`--max-retries` set `active_target`/`max_retries` in the generated `STATE.json` (fall back to `$AUTOFACTORY_TARGET`/`$AUTOFACTORY_MAX_RETRIES`, then `web`/`3`); they're only applied when `STATE.json` is actually (re)written. |
 | `autofactory start [--dir <path>]` | Loads `STATE.json` and runs the graph forward from wherever it left off. |
 | `autofactory resume [--dir <path>]` | Only useful when `status` is `AWAITING_APPROVAL`; prompts you to approve the plan, then continues the run. |
 | `autofactory status [--dir <path>] [--watch]` | Prints status, checkpoints, retry count, usage totals, and the last 10 log entries (engine/model/duration/tokens/cost). `--watch` polls every 2s and reprints on change. |
