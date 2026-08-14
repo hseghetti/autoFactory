@@ -40,6 +40,31 @@ async function withNodeTiming(
   return result;
 }
 
+const MAX_DIFF_CHARS = 6000;
+
+/**
+ * Diff of everything changed in the working tree, for the advisory
+ * inspect/securityCheck passes. Two things make plain `git diff --stat`
+ * unreliable here: (1) newly created files are untracked, and `git diff`
+ * never shows untracked files at all — `-A -N` (intent-to-add) marks their
+ * paths without staging real content, so they show up as additions; (2) a
+ * security review that only sees `--stat` (filenames + line counts) can
+ * never actually spot a hardcoded secret, since it never sees any code —
+ * so this returns the real diff body, capped to fit a local model's
+ * context window, not just the stat summary.
+ */
+async function getWorkingDiff(projectRoot: string): Promise<string> {
+  await execa("git", ["add", "-A", "-N"], { cwd: projectRoot, reject: false });
+
+  const diff = await execa("git", ["diff"], { cwd: projectRoot, reject: false })
+    .then((r) => r.stdout)
+    .catch(() => "");
+
+  if (!diff.trim()) return "(no changes detected in the working tree)";
+  if (diff.length <= MAX_DIFF_CHARS) return diff;
+  return `${diff.slice(0, MAX_DIFF_CHARS)}\n... (diff truncated, ${diff.length - MAX_DIFF_CHARS} more characters)`;
+}
+
 interface EngineCallLike {
   success: boolean;
   durationMs?: number;
@@ -192,18 +217,16 @@ export function createNodes(ctx: FactoryContext) {
   async function inspectNode(state: FactoryState): Promise<Partial<FactoryState>> {
     return withNodeTiming(reporter, "inspect", async () => {
       const model = process.env.AUTOFACTORY_INSPECT_MODEL ?? "qwen2.5-coder:32b";
-      const diff = await execa("git", ["diff", "--stat"], { cwd: ctx.projectRoot, reject: false })
-        .then((r) => r.stdout)
-        .catch(() => "");
+      const diff = await getWorkingDiff(ctx.projectRoot);
 
       const result = await runEngineCall(reporter, "inspect", "local-http", model, () =>
         callOllama({
           model,
           prompt:
             "You are a local code inspector that runs after an architecture pass and before the " +
-            "test suite. Review this diff summary and flag anything obviously wrong (missing " +
-            "files, unrelated changes, likely broken imports). Be brief — this is advisory, not " +
-            `blocking.\n\nDIFF STAT:\n${diff.trim() || "(no git diff available)"}`,
+            "test suite. Review this diff and flag anything obviously wrong (missing files, " +
+            "unrelated changes, likely broken imports). Be brief — this is advisory, not " +
+            `blocking.\n\nDIFF:\n${diff}`,
         }),
       );
 
@@ -271,18 +294,16 @@ export function createNodes(ctx: FactoryContext) {
   async function securityCheckNode(state: FactoryState): Promise<Partial<FactoryState>> {
     return withNodeTiming(reporter, "securityCheck", async () => {
       const model = process.env.AUTOFACTORY_SECURITY_MODEL ?? "qwen2.5-coder:32b";
-      const diff = await execa("git", ["diff", "--stat"], { cwd: ctx.projectRoot, reject: false })
-        .then((r) => r.stdout)
-        .catch(() => "");
+      const diff = await getWorkingDiff(ctx.projectRoot);
 
       const result = await runEngineCall(reporter, "securityCheck", "local-http", model, () =>
         callOllama({
           model,
           prompt:
             "You are a local security reviewer that runs after tests pass and before a change is " +
-            "finalized. Review this diff summary and flag anything that looks like a hardcoded " +
-            "secret, credential, or an obviously dangerous command (e.g. unrestricted rm, curl|sh). " +
-            `Be brief — this is advisory, not blocking.\n\nDIFF STAT:\n${diff.trim() || "(no git diff available)"}`,
+            "finalized. Review this diff and flag anything that looks like a hardcoded secret, " +
+            "credential, or an obviously dangerous command (e.g. unrestricted rm, curl|sh). " +
+            `Be brief — this is advisory, not blocking.\n\nDIFF:\n${diff}`,
         }),
       );
 
