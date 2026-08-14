@@ -120,7 +120,14 @@ and *where* a human needs to approve before it continues.
    [ deploy ] -- opt-in: runs $AUTOFACTORY_DEPLOY_COMMAND if set, else no-op
           |
           v
+   [ readme ] -- Claude Code CLI writes/updates the target project's README.md (always runs)
+          |
+          v
    [ finalize ]                          (or [ fail ] if retries exhausted)
+          |
+          v
+   [ report ] -- writes .factory/REPORT.md: cost/timing/tokens per step + a short summary
+              (always runs, success or failure)
 ```
 
 Every node appends to `.factory/STATE.json`'s `logs`, so `autofactory status`
@@ -233,6 +240,33 @@ What's actually captured per engine:
   aren't reliably parseable today and are left blank rather than guessed.
 - **`npm test`** (`process`): duration and pass/fail only.
 
+## README generation and run reports
+
+Two more things happen on every run, neither opt-in:
+
+- **`readme`**: after `deploy`, before `finalize`, Claude Code CLI writes or
+  updates the target project's own `README.md` — what it read from
+  `.factory/BRIEF.md`, the real `package.json` scripts, and the actual
+  project structure it just built (or refines what's already there, rather
+  than discarding real content to start over). This uses a **cloud** model
+  (`AUTOFACTORY_README_MODEL`, falls back to `AUTOFACTORY_ARCHITECT_MODEL`)
+  because getting it right means actually reading the real project, not
+  guessing from a prompt.
+- **`report`**: the last node on both the success and failure paths (after
+  `finalize` or `fail`), writes `.factory/REPORT.md` — the same
+  cost/duration/token data `autofactory status` and the console summary
+  already show, but persisted as a standalone file: every step executed,
+  in order, with its engine/model/duration/tokens/cost, plus aggregated
+  totals (total cloud cost, cloud vs. local call counts, wall-clock span)
+  and final checkpoints. The numbers come straight from `STATE.json`'s
+  `logs` — deterministic, not model-generated, so a bad summary can't
+  corrupt them. On top of that table, a **local** model
+  (`AUTOFACTORY_REPORT_MODEL`, default `deepseek-r1:14b`) writes a short
+  (2-4 sentence) plain-language narrative of what happened — what got
+  built, what failed and got retried, the final outcome — read that as a
+  quick human-readable gloss, not as the source of truth for the numbers
+  below it.
+
 ## E2E, visual review & deploy (optional)
 
 Unit tests alone don't tell you a UI actually works, looks right, or that
@@ -290,7 +324,8 @@ autofactory/
 │   ├── BRIEF.md               # You fill this in: what you want built
 │   ├── UX_WIREFRAMES.md       # Optional: component hierarchy/interaction flows, read by plan
 │   ├── PLAN.md                # Written by the plan node, reviewed by you
-│   └── STATE.json             # Graph state engine & checkpoint manager
+│   ├── STATE.json             # Graph state engine & checkpoint manager
+│   └── REPORT.md              # Written by the report node at the end of every run
 ├── packages/
 │   ├── core/                  # Graph orchestration engine (LangGraph.js)
 │   │   └── src/{graph,router,harness}
@@ -411,6 +446,11 @@ tool. In particular:
   (if `AUTOFACTORY_DEPLOY_COMMAND` was never set). Check
   `checkpoints.e2e_passed`/`deployed` via `autofactory status`, don't
   assume `DONE` covers everything.
+- `readme` (unlike `visualReview`/`deploy`) isn't opt-in — it's a real
+  cloud call on every run that reaches `finalize`. Expect it to be cheap
+  relative to `architect` (it's reading structure and writing one file,
+  not implementing a plan), but it's not free; there's no env var to skip
+  it today if that's not what you want on every run.
 - Resume granularity is coarse: `status` only distinguishes
   `AWAITING_APPROVAL`/`HEALING`/`TESTING`/`DONE`/etc., not "which of
   test/e2eTest/visualReview/securityCheck/deploy already ran." A crash

@@ -11,6 +11,7 @@ export const CheckpointsSchema = z.object({
   e2e_passed: z.boolean().default(false),
   security_approved: z.boolean(),
   deployed: z.boolean().default(false),
+  readme_generated: z.boolean().default(false),
 });
 
 export const EngineKindSchema = z.enum(["cloud-cli", "local-cli", "local-http", "process"]);
@@ -84,6 +85,7 @@ export const INITIAL_STATE: FactoryState = {
     e2e_passed: false,
     security_approved: false,
     deployed: false,
+    readme_generated: false,
   },
   logs: [],
 };

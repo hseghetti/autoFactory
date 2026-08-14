@@ -97,6 +97,75 @@ async function findLatestScreenshot(projectRoot: string): Promise<string | undef
   return newest?.path;
 }
 
+function formatReportDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+/**
+ * Renders .factory/REPORT.md from state.logs — deterministic tables for
+ * cost/timing/tokens (these are real numbers, not something to paraphrase
+ * through a model that might round them wrong) plus a short model-written
+ * narrative passed in separately.
+ */
+function buildReportMarkdown(state: FactoryState, narrative: string): string {
+  const usageLogs = state.logs.filter((l) => l.engine !== undefined);
+  const totalCost = usageLogs.reduce((sum, l) => sum + (l.costUsd ?? 0), 0);
+  const cloudCalls = usageLogs.filter((l) => l.engine === "cloud-cli").length;
+  const localCalls = usageLogs.filter((l) => l.engine === "local-http" || l.engine === "local-cli").length;
+  const first = state.logs[0]?.timestamp;
+  const last = state.logs[state.logs.length - 1]?.timestamp;
+  const spanMs = first && last ? new Date(last).getTime() - new Date(first).getTime() : undefined;
+
+  const rows = state.logs.map((l, i) => {
+    const dur = l.durationMs !== undefined ? formatReportDuration(l.durationMs) : "-";
+    const tokens =
+      l.tokensIn !== undefined || l.tokensOut !== undefined ? `${l.tokensIn ?? "?"} in / ${l.tokensOut ?? "?"} out` : "-";
+    const cost = l.costUsd !== undefined ? `$${l.costUsd.toFixed(4)}` : "-";
+    const result = l.success === undefined ? "-" : l.success ? "ok" : "failed";
+    return `| ${i + 1} | ${l.node} | ${l.engine ?? "-"} | ${l.model ?? "-"} | ${dur} | ${tokens} | ${cost} | ${result} |`;
+  });
+
+  return [
+    "# AutoFactory Run Report",
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    `Status: ${state.status}`,
+    `Target: ${state.active_target}`,
+    `Retries used: ${state.retry_count}/${state.max_retries}`,
+    "",
+    "## Summary",
+    "",
+    narrative || "(no summary available)",
+    "",
+    "## Cost & usage",
+    "",
+    "| Metric | Value |",
+    "|---|---|",
+    `| Total cloud cost | $${totalCost.toFixed(4)} |`,
+    `| Cloud calls | ${cloudCalls} |`,
+    `| Local calls | ${localCalls} |`,
+    `| Wall-clock span (first log to last) | ${spanMs !== undefined ? formatReportDuration(spanMs) : "-"} |`,
+    "",
+    "## Steps executed",
+    "",
+    "| # | Node | Engine | Model | Duration | Tokens | Cost | Result |",
+    "|---|---|---|---|---|---|---|---|",
+    ...rows,
+    "",
+    "## Checkpoints",
+    "",
+    ...Object.entries(state.checkpoints).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+  ].join("\n");
+}
+
 interface TriageDecision {
   action: TriageAction;
   reason: string;
@@ -576,6 +645,48 @@ export function createNodes(ctx: FactoryContext) {
     });
   }
 
+  async function readmeNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "readme", async () => {
+      const model = process.env.AUTOFACTORY_README_MODEL ?? process.env.AUTOFACTORY_ARCHITECT_MODEL ?? "claude-sonnet-5";
+      const brief = await readFile(briefPath, "utf-8").catch(() => "");
+
+      const result = await runEngineCall(reporter, "readme", "cloud-cli", model, () =>
+        callClaudeCode({
+          cwd: ctx.projectRoot,
+          model,
+          prompt:
+            "Write or update this project's README.md so it accurately documents what's " +
+            "actually here — read the real package.json (scripts, dependencies), project " +
+            "structure, and .factory/BRIEF.md for context. Cover: what the project does (from " +
+            "the brief), how to install and run it (the real scripts, not invented ones), how " +
+            "to run tests (unit, and E2E if a test:e2e script exists), and project structure. " +
+            "If a README.md already exists with accurate content, refine/complete it rather " +
+            `than starting over — don't discard real content for the sake of rewriting.\n\n` +
+            `PRODUCT BRIEF:\n${brief}`,
+          allowedTools: "Read,Edit,Write,Bash(npm *)",
+        }),
+      );
+
+      return {
+        checkpoints: { ...state.checkpoints, readme_generated: result.success },
+        logs: withLog(
+          state,
+          "readme",
+          result.success ? `README.md written/updated via ${model}.` : `README generation failed: ${result.error}`,
+          {
+            engine: "cloud-cli",
+            model,
+            durationMs: result.durationMs,
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            costUsd: result.costUsd,
+            success: result.success,
+          },
+        ),
+      };
+    });
+  }
+
   async function securityCheckNode(state: FactoryState): Promise<Partial<FactoryState>> {
     return withNodeTiming(reporter, "securityCheck", async () => {
       const model = process.env.AUTOFACTORY_SECURITY_MODEL ?? "qwen2.5-coder:32b";
@@ -722,6 +833,44 @@ export function createNodes(ctx: FactoryContext) {
     });
   }
 
+  async function reportNode(state: FactoryState): Promise<Partial<FactoryState>> {
+    return withNodeTiming(reporter, "report", async () => {
+      const model = process.env.AUTOFACTORY_REPORT_MODEL ?? "deepseek-r1:14b";
+      const stepsText = state.logs.map((l) => `[${l.node}]${l.success === false ? " FAILED" : ""}: ${l.message.slice(0, 200)}`).join("\n");
+
+      const result = await runEngineCall(reporter, "report", "local-http", model, () =>
+        callOllama({
+          model,
+          prompt:
+            "Summarize this automated software factory run in 2-4 sentences for a human " +
+            "reading a report afterward — what got built/changed, what failed and got retried " +
+            "(if anything), and the final outcome. Be factual, don't invent details beyond what " +
+            `the steps below show.\n\nSTATUS: ${state.status}\n\nSTEPS:\n${stepsText.slice(0, 6000)}`,
+        }),
+      );
+
+      const narrative = result.success ? result.text.trim() : "(summary unavailable — see steps table below)";
+      const reportPath = join(ctx.projectRoot, ".factory", "REPORT.md");
+      await writeFile(reportPath, buildReportMarkdown(state, narrative), "utf-8");
+
+      return {
+        logs: withLog(
+          state,
+          "report",
+          `Wrote .factory/REPORT.md (${state.logs.length} steps, status ${state.status}).`,
+          {
+            engine: "local-http",
+            model,
+            durationMs: result.durationMs,
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            success: result.success,
+          },
+        ),
+      };
+    });
+  }
+
   return {
     planNode,
     humanCheckpointNode,
@@ -732,9 +881,11 @@ export function createNodes(ctx: FactoryContext) {
     visualReviewNode,
     securityCheckNode,
     deployNode,
+    readmeNode,
     triageNode,
     healNode,
     finalizeNode,
     failNode,
+    reportNode,
   };
 }

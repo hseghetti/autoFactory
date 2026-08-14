@@ -21,10 +21,12 @@ export function buildGraph(ctx: FactoryContext) {
     .addNode("visualReview", nodes.visualReviewNode)
     .addNode("securityCheck", nodes.securityCheckNode)
     .addNode("deploy", nodes.deployNode)
+    .addNode("readme", nodes.readmeNode)
     .addNode("triage", nodes.triageNode)
     .addNode("heal", nodes.healNode)
     .addNode("finalize", nodes.finalizeNode)
     .addNode("fail", nodes.failNode)
+    .addNode("report", nodes.reportNode)
     .addConditionalEdges(START, (state: FactoryState) => {
       switch (state.status) {
         case "AWAITING_APPROVAL":
@@ -61,8 +63,10 @@ export function buildGraph(ctx: FactoryContext) {
     .addEdge("heal", "test")
     .addEdge("visualReview", "securityCheck")
     .addEdge("securityCheck", "deploy")
-    .addEdge("deploy", "finalize")
-    .addEdge("finalize", END)
-    .addEdge("fail", END)
+    .addEdge("deploy", "readme")
+    .addEdge("readme", "finalize")
+    .addEdge("finalize", "report")
+    .addEdge("fail", "report")
+    .addEdge("report", END)
     .compile();
 }
